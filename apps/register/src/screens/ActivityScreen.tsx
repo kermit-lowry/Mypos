@@ -29,6 +29,7 @@ const FILTERS: [string, string, Record<string, string>][] = [
   ["override", "Price overrides", { action: "PRICE_OVERRIDE" }],
   ["price", "Price changes", { action: "PRICE_CHANGE" }],
   ["refund", "Refunds", { action: "REFUND,PREORDER_CANCELLED" }],
+  ["layaway", "Layaway", { action: "LAYAWAY_CREATED,LAYAWAY_PAYMENT,LAYAWAY_COMPLETED,LAYAWAY_CANCELLED,LAYAWAY_EXTENDED" }],
   ["approval", "PIN approvals", { action: "APPROVAL" }],
   ["approval-failed", "Failed PIN approvals", { action: "APPROVAL_FAILED" }],
   ["balances", "Balance adjustments", { action: "BALANCE_ADJUSTED" }],
@@ -101,6 +102,11 @@ const clock = (iso: unknown) => {
   const d = new Date(String(iso ?? ""));
   if (Number.isNaN(d.getTime())) return String(iso ?? "none");
   return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : d.toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+};
+/** A calendar day: "11/7/2026". */
+const dayOf = (iso: unknown) => {
+  const d = new Date(String(iso ?? ""));
+  return Number.isNaN(d.getTime()) ? String(iso ?? "none") : d.toLocaleDateString();
 };
 /** "Sam's" — the employee whose time entry a manager touched. */
 const whose = (d: any) => (d.targetName ?? d.staffName ?? d.name ? `${d.targetName ?? d.staffName ?? d.name}'s` : "an employee's");
@@ -224,6 +230,17 @@ function describe(e: Event): string {
       return `Cancelled a preorder and refunded ${money(d.refundCents)}${d.toStoreCredit ? " to store credit" : tenders(d.tenders) ? ` (${tenders(d.tenders)})` : ""}`;
     case "PAYMENT_RESOLVED":
       return `Resolved an uncertain card payment of ${money(d.amountCents)} as ${words(d.outcome)}${d.orderNumber ? ` (sale #${d.orderNumber})` : ""}`;
+    // Layaway
+    case "LAYAWAY_CREATED":
+      return `Opened layaway #${d.number} for ${money(d.totalCents)} with a ${money(d.depositCents)} deposit, due ${dayOf(d.dueAt)}`;
+    case "LAYAWAY_PAYMENT":
+      return `Layaway #${d.number} payment ${money(d.appliedCents)}${tenders(d.tenders) ? ` (${tenders(d.tenders)})` : ""} · balance ${money(d.balanceCents)}`;
+    case "LAYAWAY_COMPLETED":
+      return `Picked up layaway #${d.number}${d.orderNumber ? ` → sale #${d.orderNumber}` : ""}`;
+    case "LAYAWAY_CANCELLED":
+      return `Cancelled layaway #${d.number}: fee ${money(d.feeCents)}, refunded ${money(d.refundedCents)}${d.toStoreCredit ? " to store credit" : tenders(d.legs) ? ` (${tenders(d.legs)})` : ""}${d.reason ? ` (${d.reason})` : ""}`;
+    case "LAYAWAY_EXTENDED":
+      return `Extended layaway #${d.number} to ${dayOf(d.to)}${d.from ? ` (was ${dayOf(d.from)})` : ""}`;
     // Approvals and sign-ins
     case "APPROVAL":
       return `PIN approval for ${perms(d.permissions)}${d.discountBps ? ` (${pct(d.discountBps)} discount)` : ""}${d.reason ? `: ${d.reason}` : ""}`;

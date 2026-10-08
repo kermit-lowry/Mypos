@@ -7,7 +7,7 @@ import { useSession } from "../../session";
 import { ui } from "../../theme";
 import { Badge, Card, Chips, DateRangePicker, day, downloadCsv, money, pct, Picker, PRESETS, Table, when, type Column, type DateRange } from "../ui";
 
-export type Report = "summary" | "period" | "category" | "kind" | "employee" | "product" | "brand" | "game" | "vendor" | "tenders" | "discounts" | "tax" | "trade-ins" | "no-sales" | "valuation" | "low-stock" | "movements" | "purchases" | "transfers" | "daily-close" | "shifts" | "timesheets" | "employee-shifts";
+export type Report = "summary" | "period" | "category" | "kind" | "employee" | "product" | "brand" | "game" | "vendor" | "tenders" | "discounts" | "tax" | "trade-ins" | "no-sales" | "valuation" | "low-stock" | "movements" | "purchases" | "transfers" | "daily-close" | "shifts" | "timesheets" | "employee-shifts" | "layaways";
 
 /** Chips in the order they're shown, under a small heading per group. */
 const GROUPS: [string, [Report, string][]][] = [
@@ -15,7 +15,7 @@ const GROUPS: [string, [Report, string][]][] = [
   ["Items", [["product", "Top items"], ["category", "By category"], ["kind", "By product type"], ["brand", "By brand"], ["game", "By game"], ["vendor", "By vendor"]]],
   ["Stock", [["no-sales", "Dead stock"], ["valuation", "Inventory value"], ["low-stock", "Low stock"], ["movements", "Stock movements"]]],
   ["Purchasing", [["purchases", "Purchases"], ["transfers", "Transfers"]]],
-  ["Staff & cash", [["daily-close", "Daily close"], ["shifts", "Shifts"], ["timesheets", "Timesheets"], ["employee-shifts", "Sales by shift"]]],
+  ["Staff & cash", [["daily-close", "Daily close"], ["shifts", "Shifts"], ["timesheets", "Timesheets"], ["employee-shifts", "Sales by shift"], ["layaways", "Layaways"]]],
 ];
 const REPORTS = GROUPS.flatMap(([, r]) => r);
 /** Reports the server narrows by brand / vendor / category / product type. */
@@ -90,6 +90,7 @@ export function Reports({ initial = "summary" }: { initial?: Report }) {
       case "shifts": return `/reports/shifts${q(dates, loc)}`;
       case "timesheets": return `/reports/timesheets${q(dates, loc)}`;
       case "employee-shifts": return `/reports/employee-shifts${q(dates, loc)}`;
+      case "layaways": return `/reports/layaways${q(loc)}`;
       default: return `/reports/sales-by/${report}${q(dates, loc, "limit=500")}`;
     }
   };
@@ -106,7 +107,7 @@ export function Reports({ initial = "summary" }: { initial?: Report }) {
     }
   }
 
-  const dated = !["valuation", "low-stock"].includes(report);
+  const dated = !["valuation", "low-stock", "layaways"].includes(report);
   return (
     <ScrollView contentContainerStyle={{ padding: 12, gap: 12 }}>
       <Card title="Report">
@@ -356,6 +357,30 @@ function ReportView({ report, data, filters, by }: { report: Report; data: any; 
             empty="No shifts in this range."
           />
         </Card>
+      );
+    case "layaways":
+      return (
+        <>
+          <Card title="Layaways">
+            <KeyValues obj={{ active: data.active ?? 0, overdue: data.overdue ?? 0, balanceCents: data.balanceCents ?? 0, heldCents: data.heldCents ?? 0 }} />
+          </Card>
+          <Card title="Active layaways">
+            <Table<any>
+              rows={data.rows ?? []}
+              keyOf={(r) => r.id ?? String(r.number)}
+              columns={[
+                { key: "n", label: "Layaway #", render: (r) => `#${r.number}`, width: 90 },
+                { key: "c", label: "Customer", render: (r) => r.customer ?? "", width: 180 },
+                { key: "t", label: "Total", render: (r) => money(r.totalCents), width: 90, align: "right" },
+                { key: "p", label: "Paid", render: (r) => money(r.paidCents), width: 90, align: "right" },
+                { key: "b", label: "Balance", render: (r) => money(r.balanceCents), width: 90, align: "right" },
+                { key: "d", label: "Due", render: (r) => (r.dueAt ? day(r.dueAt) : ""), width: 110 },
+                { key: "o", label: "Overdue", render: (r) => (r.overdue ? <Badge text={r.daysOverdue ? `${r.daysOverdue} day${r.daysOverdue === 1 ? "" : "s"}` : "overdue"} tone="bad" /> : ""), width: 110 },
+              ]}
+              empty="No active layaways."
+            />
+          </Card>
+        </>
       );
     default:
       return <Card title={t(REPORTS.find((r) => r[0] === report)?.[1] ?? "Report")}><Table<any> rows={data} keyOf={(r) => r.key} columns={byDim} /></Card>;

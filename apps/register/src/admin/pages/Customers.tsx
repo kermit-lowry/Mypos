@@ -5,8 +5,8 @@ import { useGuard } from "../../approval";
 import { Button } from "../../components/Button";
 import { SplitPane } from "../../components/SplitPane";
 import { useCan } from "../../session";
-import { ui } from "../../theme";
-import { Card, Field, Input, money, Table, when } from "../ui";
+import { colors, ui } from "../../theme";
+import { Badge, Card, day, Field, Input, money, Table, when } from "../ui";
 
 interface Detail extends Customer {
   phone: string | null;
@@ -14,6 +14,19 @@ interface Detail extends Customer {
   loyalty: { points: number; rewardsCents: number };
   createdAt: string;
 }
+/** A row from GET /layaways?customerId=… (page-local; the Layaways page owns the full shape). */
+interface CustomerLayaway {
+  id: string;
+  number: number;
+  status: "ACTIVE" | "COMPLETED" | "CANCELLED";
+  totalCents: number;
+  paidCents: number;
+  balanceCents: number;
+  overdue?: boolean;
+  dueAt: string;
+}
+const LAYAWAY_STATUS: Record<string, { text: string; tone: "good" | "bad" | "warn" | "muted" }> = { ACTIVE: { text: "active", tone: "warn" }, COMPLETED: { text: "picked up", tone: "good" }, CANCELLED: { text: "cancelled", tone: "muted" } };
+const layawayOverdue = (l: CustomerLayaway) => l.status === "ACTIVE" && (l.overdue ?? new Date(l.dueAt).getTime() < Date.now());
 
 /** Find a customer; see and adjust balances; recent sales. */
 export function Customers() {
@@ -23,6 +36,7 @@ export function Customers() {
   const [results, setResults] = useState<Customer[]>([]);
   const [picked, setPicked] = useState<Detail | null>(null);
   const [orders, setOrders] = useState<any[]>([]);
+  const [layaways, setLayaways] = useState<CustomerLayaway[]>([]);
   const [showRight, setShowRight] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -43,6 +57,8 @@ export function Customers() {
     setEmail(d.email ?? "");
     setPhone(d.phone ?? "");
     setOrders(await api("GET", `/orders?customerId=${c.id}&take=20`));
+    // An older server without layaways shouldn't stop the customer from opening.
+    setLayaways(await api<CustomerLayaway[]>("GET", `/layaways?customerId=${c.id}&take=50`).then((r) => (Array.isArray(r) ? r : [])).catch(() => []));
     setShowRight(true);
     setMessage(null);
   };
@@ -126,6 +142,22 @@ export function Customers() {
             {message && <Text style={ui.text}>{message}</Text>}
             <Card title="Recent sales">
               <Table rows={orders} keyOf={(o) => o.id} columns={[{ key: "n", label: "Sale", render: (o) => `#${o.number}`, width: 80 }, { key: "w", label: "When", render: (o) => when(o.createdAt), width: 170 }, { key: "i", label: "Items", render: (o) => o.lines.map((l: any) => `${l.quantity}× ${l.title}`).join(", "), width: 300 }, { key: "t", label: "Total", render: (o) => money(o.totalCents + (o.cardAdjustmentCents ?? 0)), width: 90, align: "right" }, { key: "s", label: "Status", render: (o) => o.status.toLowerCase().replace("_", " "), width: 120 }]} empty="No sales yet." />
+            </Card>
+            <Card title="Layaways">
+              <Table<CustomerLayaway>
+                rows={layaways}
+                keyOf={(l) => l.id}
+                columns={[
+                  { key: "n", label: "Layaway", render: (l) => `#${l.number}`, width: 90 },
+                  { key: "s", label: "Status", render: (l) => <Badge text={LAYAWAY_STATUS[l.status]?.text ?? String(l.status).toLowerCase()} tone={LAYAWAY_STATUS[l.status]?.tone} />, width: 100 },
+                  { key: "t", label: "Total", render: (l) => money(l.totalCents), width: 90, align: "right" },
+                  { key: "p", label: "Paid", render: (l) => money(l.paidCents), width: 90, align: "right" },
+                  { key: "b", label: "Balance", render: (l) => money(l.balanceCents), width: 90, align: "right" },
+                  { key: "d", label: "Due", render: (l) => <Text style={[ui.text, layawayOverdue(l) && { color: colors.bad }]}>{day(l.dueAt)}{layawayOverdue(l) ? " · overdue" : ""}</Text>, width: 160 },
+                ]}
+                empty="No layaways."
+              />
+              <Text style={ui.muted}>Take payments at a register; extend, cancel or print statements from Sales › Layaways.</Text>
             </Card>
           </ScrollView>
         ) : (

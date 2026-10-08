@@ -17,6 +17,7 @@ import { colors, theme, ui } from "../theme";
 import { Customers } from "./pages/Customers";
 import { Dashboard } from "./pages/Dashboard";
 import { Inventory } from "./pages/Inventory";
+import { Layaways } from "./pages/Layaways";
 import { Orders } from "./pages/Orders";
 import { Purchasing } from "./pages/Purchasing";
 import { Reports } from "./pages/Reports";
@@ -24,7 +25,7 @@ import { Shifts } from "./pages/Shifts";
 import { Timesheets } from "./pages/Timesheets";
 import { Transfers } from "./pages/Transfers";
 
-type PageId = "dashboard" | "orders" | "shifts" | "reports" | "products" | "brands" | "purchase-orders" | "vendors" | "purchase-report" | "transfers" | "transfer-report" | "customers" | "employees" | "timesheets" | "deals" | "loyalty" | "store" | "activity";
+type PageId = "dashboard" | "orders" | "shifts" | "layaways" | "reports" | "products" | "brands" | "purchase-orders" | "vendors" | "purchase-report" | "transfers" | "transfer-report" | "customers" | "employees" | "timesheets" | "deals" | "loyalty" | "store" | "activity";
 
 interface NavItem {
   id: PageId;
@@ -40,7 +41,7 @@ interface NavGroup {
 
 const NAV: NavGroup[] = [
   { items: [{ id: "dashboard", label: "Dashboard", perms: ["VIEW_REPORTS"] }] },
-  { label: "Sales", items: [{ id: "orders", label: "Orders", perms: ["VIEW_REPORTS", "REFUND"] }, { id: "shifts", label: "Shifts", perms: ["VIEW_REPORTS", "DRAWER_OPEN_CLOSE"] }, { id: "reports", label: "Reports", perms: ["VIEW_REPORTS"] }] },
+  { label: "Sales", items: [{ id: "orders", label: "Orders", perms: ["VIEW_REPORTS", "REFUND"] }, { id: "shifts", label: "Shifts", perms: ["VIEW_REPORTS", "DRAWER_OPEN_CLOSE"] }, { id: "layaways", label: "Layaways", perms: ["VIEW_REPORTS", "LAYAWAY_CREATE"] }, { id: "reports", label: "Reports", perms: ["VIEW_REPORTS"] }] },
   { label: "Inventory", items: [{ id: "products", label: "Products", perms: ["MANAGE_CATALOG", "INVENTORY_ADJUST"] }, { id: "brands", label: "Brands", perms: ["MANAGE_CATALOG"] }] },
   {
     label: "Purchase",
@@ -61,6 +62,7 @@ const PAGES: Record<PageId, (ctx: { onLocationSaved: (l: Location) => void }) =>
   dashboard: () => <Dashboard />,
   orders: () => <Orders />,
   shifts: () => <Shifts />,
+  layaways: () => <Layaways />,
   reports: () => <Reports />,
   products: () => <Inventory view="items" />,
   brands: () => <Inventory view="brands" />,
