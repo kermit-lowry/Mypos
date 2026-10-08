@@ -79,6 +79,13 @@ gaps; the fixes are in this branch:
   and header; timesheets with manager edits, hours and sales-by-shift
   reports, CSV.
 
+**Layaway**
+- Sell screen → Layaway: deposit (min % per store), due date, notes; the
+  stock is held and prices locked. Layaways tab: payments, pick up (creates
+  the sale), cancel with fee and refunds (PIN), printable statements.
+- Back office: Layaways page (overdue flags, extend, notes, cancel), customer
+  layaways, layaway liability report, terms in Store settings.
+
 ## First things to try on real hardware
 1. PAX terminal + Handpoint keys in `.env`, run a $1 sale and a refund.
 2. ESC/POS receipt printer with the drawer plugged in: cash sale pops the

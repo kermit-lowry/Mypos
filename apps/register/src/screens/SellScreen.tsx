@@ -703,9 +703,10 @@ function LayawaySheet(props: {
               terminalId: props.terminalState.terminal?.id,
             };
             try {
-              const r = await guard("LAYAWAY_CREATE", (t) => api<Layaway>("POST", "/layaways", body, { approvalToken: t }));
+              // The server answers { layaway, changeCents, replayed }.
+              const r = await guard("LAYAWAY_CREATE", (t) => api<{ layaway: Layaway } | Layaway>("POST", "/layaways", body, { approvalToken: t }));
               if (!r) throw new ApiError(0, "CANCELLED", "Manager approval cancelled");
-              return r;
+              return "layaway" in r ? r.layaway : r;
             } catch (e) {
               throw layawayError(e);
             }
