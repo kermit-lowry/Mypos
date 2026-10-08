@@ -67,6 +67,18 @@ gaps; the fixes are in this branch:
 - Owners can set website passwords from the Employees screen; everyone can
   change their own.
 
+**Shifts, daily close-out and the time clock**
+- Start shift (float counted by denomination), paid in / out / safe drops
+  with a manager PIN for cashiers, X report, blind close with a variance
+  alert that needs a manager's approval, stored and printable Z report.
+- Cash from sales, refunds, trade-in payouts and preorder deposits lands in
+  the register's open drawer; a store can refuse cash without an open drawer.
+- Back office: daily close-out checklist, drawer session history, Shifts
+  and Daily close reports; Store settings for the three drawer options.
+- Time clock: PIN clock in/out on the register's sign-in screen, Shift tab
+  and header; timesheets with manager edits, hours and sales-by-shift
+  reports, CSV.
+
 ## First things to try on real hardware
 1. PAX terminal + Handpoint keys in `.env`, run a $1 sale and a refund.
 2. ESC/POS receipt printer with the drawer plugged in: cash sale pops the
