@@ -1,4 +1,6 @@
 import { StatusBar } from "expo-status-bar";
+import { Platform } from "react-native";
+import { AdminApp } from "./admin/AdminApp";
 import { useKeepAwake } from "expo-keep-awake";
 import { useEffect, useState } from "react";
 import { BackHandler, Pressable, ScrollView, Text, View } from "react-native";
@@ -32,7 +34,7 @@ const TAB_PERMISSION: Partial<Record<Tab, Permission>> = {
   Loyalty: "MANAGE_LOYALTY",
 };
 
-export default function App() {
+function RegisterApp() {
   const [ready, setReady] = useState(false);
   const [session, setSession] = useState<Omit<Session, "signOut"> | null>(null);
   const [tab, setTab] = useState<Tab>("Sell");
@@ -138,4 +140,14 @@ export default function App() {
       </SessionContext.Provider>
     </SafeAreaProvider>
   );
+}
+
+/**
+ * In a browser this is the back-office website; on devices it's the register.
+ * Open the web build with ?register to run the register in a browser.
+ */
+export default function App() {
+  const web = Platform.OS === "web";
+  const wantRegister = web && typeof globalThis.location !== "undefined" && new URLSearchParams(globalThis.location.search).has("register");
+  return web && !wantRegister ? <AdminApp /> : <RegisterApp />;
 }

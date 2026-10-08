@@ -184,6 +184,7 @@ export function catalogRoutes(app: FastifyInstance, base: Ctx) {
     const data = parse(
       z.object({
         priceCents: z.number().int().nonnegative().optional(),
+        costCents: z.number().int().nonnegative().nullable().optional(),
         autoPrice: z.boolean().optional(),
         barcode: z.string().optional(),
         imageUrl: z.string().url().nullable().optional(),

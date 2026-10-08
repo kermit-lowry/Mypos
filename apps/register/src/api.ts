@@ -33,6 +33,7 @@ export async function setToken(t: string | null) {
 }
 
 export const getApiUrl = () => baseUrl;
+export const getToken = () => token;
 
 /**
  * JSON request. Network failures on POSTs carrying an idempotencyKey are
@@ -53,7 +54,8 @@ export async function api<T = any>(method: "GET" | "POST" | "PUT" | "PATCH" | "D
       res = await fetch(`${baseUrl}${path}`, {
         method,
         headers: {
-          "content-type": "application/json",
+          // Only claim a JSON body when there is one; servers reject an empty JSON body.
+          ...(body === undefined ? {} : { "content-type": "application/json" }),
           ...(token ? { authorization: `Bearer ${token}` } : {}),
           ...(opts.approvalToken ? { "x-approval-token": opts.approvalToken } : {}),
         },
@@ -87,6 +89,9 @@ export interface Variant {
   grade?: string | null;
   certNumber?: string | null;
   imageUrl?: string | null;
+  costCents?: number | null;
+  autoPrice?: boolean;
+  barcode?: string | null;
   taxable: boolean;
   serialized: boolean;
   inventory?: { locationId: string; onHand: number }[];
@@ -103,6 +108,8 @@ export interface Product {
   setName: string | null;
   setCode: string | null;
   collectorNumber: string | null;
+  categoryId?: string | null;
+  channels?: string[];
   variants: Variant[];
 }
 
@@ -161,7 +168,7 @@ export interface Location {
 export async function apiText(method: "GET" | "POST", path: string, body?: unknown): Promise<string> {
   const res = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    headers: { ...(body === undefined ? {} : { "content-type": "application/json" }), ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();

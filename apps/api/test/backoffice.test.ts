@@ -188,3 +188,15 @@ describe("reports", () => {
     expect(m.body.map((x: any) => x.delta)).toEqual([-1, -2]);
   });
 });
+
+describe("request parsing", () => {
+  it("accepts a body-less POST that still declares a JSON content type", async () => {
+    const vendor = await w.as(w.manager, "POST", "/vendors", { name: "V" });
+    const po = await w.as(w.manager, "POST", "/purchase-orders", { vendorId: vendor.body.id, locationId: w.locationId, lines: [{ variantId: v.nm, quantity: 1, unitCostCents: 100 }] });
+    const res = await w.app.inject({ method: "POST", url: `/purchase-orders/${po.body.id}/order`, headers: { authorization: `Bearer ${w.manager}`, "content-type": "application/json" }, payload: "" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe("ORDERED");
+    const bad = await w.app.inject({ method: "POST", url: "/vendors", headers: { authorization: `Bearer ${w.manager}`, "content-type": "application/json" }, payload: "{not json" });
+    expect(bad.statusCode).toBe(400);
+  });
+});

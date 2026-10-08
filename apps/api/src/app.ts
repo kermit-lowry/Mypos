@@ -27,6 +27,19 @@ export async function buildApp(deps: { prisma: PrismaClient; gateway: PaymentGat
   await app.register(cors, { origin: true, methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] });
   await app.register(jwt, { secret: config.jwtSecret });
 
+  // Treat an empty JSON body as "no body" instead of a 400, so a client that
+  // always sends the JSON content type can still call body-less actions.
+  app.removeContentTypeParser("application/json");
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
+    const text = typeof body === "string" ? body : body.toString("utf8");
+    if (text.trim() === "") return done(null, undefined);
+    try {
+      done(null, JSON.parse(text));
+    } catch (e) {
+      done(Object.assign(e as Error, { statusCode: 400 }), undefined);
+    }
+  });
+
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof AppError) {
       return reply.code(err.status).send({ error: err.code, message: err.message, details: err.details });

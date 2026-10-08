@@ -60,6 +60,14 @@ export function salesRoutes(app: FastifyInstance, base: Ctx) {
   // ── Customers & store credit ───────────────────────────────
   app.post("/customers", staff, async (req) => prisma.customer.create({ data: parse(CustomerInput, req.body) }));
 
+  app.patch("/customers/:id", { preHandler: requirePermission("MANAGE_CUSTOMERS") }, async (req) => {
+    const { id } = req.params as { id: string };
+    const data = parse(z.object({ name: z.string().min(1).max(120).optional(), email: z.string().email().nullable().optional(), phone: z.string().max(40).nullable().optional(), playerIds: z.record(z.string()).optional() }), req.body);
+    const c = await prisma.customer.update({ where: { id }, data });
+    await audit(prisma, { action: "CUSTOMER_UPDATED", staffId: req.user.sub, details: { customerId: id, fields: Object.keys(data) } });
+    return c;
+  });
+
   app.get("/customers", staff, async (req) => {
     const { q } = parse(z.object({ q: z.string().min(1) }), req.query);
     return prisma.customer.findMany({

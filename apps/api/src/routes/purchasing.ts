@@ -104,7 +104,7 @@ export function purchasingRoutes(app: FastifyInstance, base: Ctx) {
   });
 
   /** Low-stock trigger per item and location (drives reorder suggestions and the low-stock report). */
-  app.put("/inventory/:variantId/low-stock", purchasing, async (req) => {
+  app.put("/inventory/:variantId/low-stock", { preHandler: requirePermission("INVENTORY_ADJUST") }, async (req) => {
     const { variantId } = req.params as { variantId: string };
     const { locationId, lowStockQty } = parse(z.object({ locationId: z.string(), lowStockQty: z.number().int().min(0).nullable() }), req.body);
     return prisma.inventoryLevel.upsert({
