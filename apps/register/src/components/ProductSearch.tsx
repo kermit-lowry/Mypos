@@ -27,8 +27,12 @@ export function variantLabel(v: Variant): string {
 
 export const imageOf = (p: Product, v: Variant) => v.imageUrl ?? p.imageUrl ?? null;
 
-/** Search by name, set code, collector #, style code, SKU, or scanned barcode. */
-export function ProductSearch({ onPick }: { onPick: (p: Product, v: Variant) => void }) {
+/**
+ * Search by name, set code, collector #, style code, SKU, vendor SKU, or
+ * scanned barcode. `extraQuery` narrows every search (e.g. `vendorId=…` when
+ * building a purchase order); `placeholder` labels the box.
+ */
+export function ProductSearch({ onPick, extraQuery, placeholder }: { onPick: (p: Product, v: Variant) => void; extraQuery?: string; placeholder?: string }) {
   const { location } = useSession();
   const [q, setQ] = useState("");
   const [results, setResults] = useState<Product[]>([]);
@@ -53,10 +57,10 @@ export function ProductSearch({ onPick }: { onPick: (p: Product, v: Variant) => 
   };
 
   async function search(term: string, f: Filters = filters) {
-    if (!term.trim() && !hasFilters(f)) return;
+    if (!term.trim() && !hasFilters(f) && !extraQuery) return;
     setError(null);
     try {
-      const r = await api<{ results: Product[] }>("GET", `/catalog/search?q=${encodeURIComponent(term.trim())}&locationId=${location.id}${filterParams(f)}`);
+      const r = await api<{ results: Product[] }>("GET", `/catalog/search?q=${encodeURIComponent(term.trim())}&locationId=${location.id}${filterParams(f)}${extraQuery ? `&${extraQuery}` : ""}`);
       setResults(r.results);
       // A barcode/SKU hit with one variant goes straight to the cart.
       const only = r.results.length === 1 && r.results[0]!.variants.length === 1 ? r.results[0]! : null;
@@ -71,6 +75,12 @@ export function ProductSearch({ onPick }: { onPick: (p: Product, v: Variant) => 
       input.current?.focus();
     }
   }
+
+  // A narrowed search (one vendor's items) lists everything right away.
+  useEffect(() => {
+    if (extraQuery) search(q, filters);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [extraQuery]);
 
   // Changing a filter re-runs the search right away (filters alone are a valid search).
   const changeFilters = (f: Filters) => {
@@ -90,7 +100,7 @@ export function ProductSearch({ onPick }: { onPick: (p: Product, v: Variant) => 
         <TextInput
           ref={input}
           style={[ui.input, { flex: 1, minWidth: 0 }]}
-          placeholder={scannerMode ? "Scan or type…" : "Search card, set, style code, SKU…"}
+          placeholder={placeholder ?? (scannerMode ? "Scan or type…" : "Search card, set, style code, brand, SKU…")}
           autoFocus
           blurOnSubmit={false}
           showSoftInputOnFocus={!scannerMode}

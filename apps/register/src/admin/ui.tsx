@@ -1,7 +1,7 @@
 import { formatCents } from "@mypos/shared";
 import { useState, type ReactNode } from "react";
-import { Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { getApiUrl } from "../api";
+import { Modal, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { apiText, getApiUrl } from "../api";
 import { Button } from "../components/Button";
 import { useLayout } from "../layout";
 import { colors, ui } from "../theme";
@@ -209,3 +209,75 @@ export async function downloadCsv(path: string, token: string | null) {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+/**
+ * A drop-down with search, for long lists (vendors, brands, categories). Value
+ * "" means "none". Opens a sheet on phones and a popover-ish modal on desktop.
+ */
+export function Picker({ options, value, onChange, placeholder, label, allowNone = true, noneLabel = "Any" }: { options: [string, string][]; value: string; onChange: (v: string) => void; placeholder?: string; label?: string; allowNone?: boolean; noneLabel?: string }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const { dialog } = useLayout();
+  const current = options.find(([v]) => v === value)?.[1];
+  const shown = options.filter(([, l]) => l.toLowerCase().includes(q.trim().toLowerCase()));
+  return (
+    <View style={{ gap: 4, flexGrow: 1, minWidth: 140 }}>
+      {label && <Text style={ui.muted}>{label}</Text>}
+      <Pressable onPress={() => setOpen(true)} style={[ui.input, { justifyContent: "center" }]}>
+        <Text style={[ui.text, !current && { color: colors.muted }]} numberOfLines={1}>
+          {current ?? placeholder ?? noneLabel} ▾
+        </Text>
+      </Pressable>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <Pressable style={{ flex: 1, backgroundColor: colors.overlay, justifyContent: "center", alignItems: "center", padding: 12 }} onPress={() => setOpen(false)}>
+          <Pressable style={[ui.panel, { width: dialog(420), maxHeight: "80%", gap: 8 }]} onPress={() => undefined}>
+            {options.length > 8 && <TextInput style={ui.input} value={q} onChangeText={setQ} placeholder="Search…" placeholderTextColor={colors.muted} autoFocus autoCapitalize="none" autoCorrect={false} />}
+            <ScrollView>
+              {allowNone && (
+                <Pressable onPress={() => (onChange(""), setOpen(false))} style={{ paddingVertical: 10, paddingHorizontal: 8, borderRadius: 6, backgroundColor: value === "" ? colors.accent : undefined }}>
+                  <Text style={ui.text}>{noneLabel}</Text>
+                </Pressable>
+              )}
+              {shown.map(([v, l]) => (
+                <Pressable key={v} onPress={() => (onChange(v), setOpen(false), setQ(""))} style={{ paddingVertical: 10, paddingHorizontal: 8, borderRadius: 6, backgroundColor: value === v ? colors.accent : undefined }}>
+                  <Text style={ui.text}>{l}</Text>
+                </Pressable>
+              ))}
+              {shown.length === 0 && <Text style={[ui.muted, { padding: 8 }]}>No matches.</Text>}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </View>
+  );
+}
+
+/** A status pill: open / sent / received / cancelled… */
+export function Badge({ text, tone }: { text: string; tone?: "good" | "bad" | "warn" | "muted" }) {
+  const color = tone === "good" ? colors.good : tone === "bad" ? colors.bad : tone === "warn" ? colors.warn : tone === "muted" ? colors.muted : colors.text;
+  return (
+    <View style={{ alignSelf: "flex-start", paddingVertical: 2, paddingHorizontal: 8, borderRadius: 10, borderWidth: 1, borderColor: color }}>
+      <Text style={[ui.muted, { color, fontSize: 12, fontWeight: "600" }]}>{text}</Text>
+    </View>
+  );
+}
+
+/**
+ * Open a server-rendered document (PO, transfer slip, labels) in a new tab
+ * and offer to print it. Browser only; elsewhere the HTML is returned.
+ */
+export async function openDocument(path: string, print = true): Promise<string> {
+  const html = await apiText("GET", path);
+  if (Platform.OS === "web") {
+    const w = window.open("", "_blank");
+    if (!w) throw new Error("Allow pop-ups to open documents");
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    if (print) w.print();
+  }
+  return html;
+}
+
+/** "2026-10-08" from an ISO date, for date inputs. */
+export const isoDay = (iso: string | null | undefined) => (iso ? iso.slice(0, 10) : "");

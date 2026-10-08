@@ -99,18 +99,57 @@ export interface Variant {
   market?: MarketTrend | null;
 }
 
+/** One of a product's suppliers, with their item number and price. */
+export interface ProductVendor {
+  vendorId: string;
+  vendorSku: string | null;
+  costCents: number | null;
+  preferred: boolean;
+  leadDays?: number | null;
+  notes?: string | null;
+  vendor?: Vendor;
+}
+
+export interface Vendor {
+  id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  notes?: string | null;
+  active: boolean;
+  accountNumber?: string | null;
+  contactName?: string | null;
+  website?: string | null;
+  address?: string | null;
+  defaultCategoryId?: string | null;
+  /** Counts from the list endpoint. */
+  products?: number;
+  purchaseOrders?: number;
+}
+
+export interface Brand {
+  id: string;
+  name: string;
+  active: boolean;
+  /** Products carrying the brand (list endpoint). */
+  products?: number;
+}
+
 export interface Product {
   id: string;
   kind: string;
   title: string;
   brand: string | null;
+  brandId?: string | null;
   imageUrl?: string | null;
   setName: string | null;
   setCode: string | null;
   collectorNumber: string | null;
+  styleCode?: string | null;
   categoryId?: string | null;
   channels?: string[];
   variants: Variant[];
+  vendors?: ProductVendor[];
 }
 
 export interface Customer {

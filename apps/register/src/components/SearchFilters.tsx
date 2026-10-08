@@ -14,12 +14,14 @@ export interface Filters {
   /** "true" = slabs only, "false" = raw only */
   graded: "true" | "false" | null;
   inStock: boolean;
+  /** Brand ids; combine with sizes etc. ("every Nike in 10 and 10.5"). */
+  brands: string[];
 }
 
-export const EMPTY_FILTERS: Filters = { sizes: [], grades: [], gradingCompanies: [], conditions: [], itemConditions: [], graded: null, inStock: false };
+export const EMPTY_FILTERS: Filters = { sizes: [], grades: [], gradingCompanies: [], conditions: [], itemConditions: [], graded: null, inStock: false, brands: [] };
 
 export const hasFilters = (f: Filters) =>
-  f.sizes.length + f.grades.length + f.gradingCompanies.length + f.conditions.length + f.itemConditions.length > 0 || f.graded !== null || f.inStock;
+  f.sizes.length + f.grades.length + f.gradingCompanies.length + f.conditions.length + f.itemConditions.length + f.brands.length > 0 || f.graded !== null || f.inStock;
 
 /** Query string for /catalog/search. */
 export function filterParams(f: Filters): string {
@@ -31,22 +33,26 @@ export function filterParams(f: Filters): string {
   if (f.itemConditions.length) p.set("itemConditions", f.itemConditions.join(","));
   if (f.graded) p.set("graded", f.graded);
   if (f.inStock) p.set("inStock", "true");
+  if (f.brands.length) p.set("brands", f.brands.join(","));
   const s = p.toString();
   return s ? `&${s}` : "";
 }
 
 interface Facet {
   value: string;
+  /** Display name (brands: the name; value is the id). */
+  label?: string;
   variants: number;
   inStock: number;
 }
 
-interface Facets {
+export interface Facets {
   sizes: Facet[];
   grades: Facet[];
   gradingCompanies: Facet[];
   conditions: Facet[];
   itemConditions: Facet[];
+  brands: Facet[];
 }
 
 /**
@@ -84,6 +90,13 @@ export function SearchFilters({ value, onChange, locationId }: { value: Filters;
         <Chip on={value.graded === "false"} label="Raw" onPress={() => onChange({ ...value, graded: value.graded === "false" ? null : "false" })} />
         {hasFilters(value) && <Chip on={false} label="✕ Clear filters" onPress={() => onChange(EMPTY_FILTERS)} />}
       </Group>
+      {!!facets?.brands.length && (
+        <Group title="Brand (pick several)">
+          {facets.brands.map((b) => (
+            <Chip key={b.value} on={value.brands.includes(b.value)} label={b.label ?? b.value} dim={b.inStock === 0} onPress={() => toggle("brands", b.value)} />
+          ))}
+        </Group>
+      )}
       {!!facets?.sizes.length && (
         <Group title="Size (pick several)">
           {facets.sizes.map((s) => (

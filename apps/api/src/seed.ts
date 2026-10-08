@@ -76,6 +76,22 @@ for (const { variants, ...p } of products) {
   }
 }
 
+// Vendors, and which items each one supplies (an item can have several).
+const vendors = await Promise.all([
+  prisma.vendor.create({ data: { name: "Southern Hobby Supply", contactName: "Orders desk", email: "orders@southernhobby.example", phone: "615-555-0100", accountNumber: "SH-20418", website: "https://southernhobby.example" } }),
+  prisma.vendor.create({ data: { name: "GTS Distribution", email: "sales@gts.example", phone: "425-555-0188", accountNumber: "GTS-7731" } }),
+  prisma.vendor.create({ data: { name: "StockX (sourcing)", notes: "Resale sourcing; cost = winning bid + fees." } }),
+]);
+const allProducts = await prisma.product.findMany({ select: { id: true, kind: true, title: true } });
+for (const p of allProducts) {
+  if (p.kind === "TCG_SINGLE" || p.kind === "TCG_SEALED") {
+    await prisma.productVendor.create({ data: { productId: p.id, vendorId: vendors[0]!.id, preferred: true, vendorSku: `SH-${p.id.slice(-6).toUpperCase()}`, leadDays: 3 } });
+    if (p.kind === "TCG_SEALED") await prisma.productVendor.create({ data: { productId: p.id, vendorId: vendors[1]!.id, vendorSku: `GTS-${p.id.slice(-6).toUpperCase()}`, leadDays: 5 } });
+  } else {
+    await prisma.productVendor.create({ data: { productId: p.id, vendorId: vendors[2]!.id, preferred: true } });
+  }
+}
+
 await seedCategoriesAndDeals();
 
 console.log(`Seeded location ${location.id}. PINs: owner 1111, manager 2222, cashier 3333`);
