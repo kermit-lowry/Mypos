@@ -1,4 +1,4 @@
-import { PermissionKeys, PERMISSIONS, type Permission, type PermissionLevel } from "@mypos/shared";
+import { canUsePin, PermissionKeys, PERMISSIONS, type Permission, type PermissionLevel } from "@mypos/shared";
 import { useCallback, useEffect, useState } from "react";
 import { FlatList, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { api, ApiError } from "../api";
@@ -19,6 +19,8 @@ interface StaffRow {
   permissionOverrides: Partial<Record<Permission, PermissionLevel>>;
   discountMaxBps: number | null;
   hasPin?: boolean;
+  /** Whether a website (back-office) password is set; owners set it, staff can change their own. */
+  hasPassword?: boolean;
 }
 
 interface RoleRow {
@@ -29,6 +31,17 @@ interface RoleRow {
 
 const LEVEL_LABEL: Record<PermissionLevel, string> = { ALLOW: "Allowed", PIN: "Needs PIN", DENY: "Not allowed" };
 const GROUPS = [...new Set(PermissionKeys.map((k) => PERMISSIONS[k].group))];
+const PASSWORD_MIN = 10;
+const PASSWORD_MAX = 200;
+
+/** Why a website password won't be accepted, or null if it's fine. */
+const passwordProblem = (p: string) =>
+  p.length < PASSWORD_MIN ? `Website password must be at least ${PASSWORD_MIN} characters` : p.length > PASSWORD_MAX ? `Website password must be ${PASSWORD_MAX} characters or fewer` : null;
+
+/** The levels a permission can cycle through: page and sign-in gates can't be PIN-approved. */
+const levelsFor = (p: Permission): PermissionLevel[] => (canUsePin(p) ? ["ALLOW", "PIN", "DENY"] : ["ALLOW", "DENY"]);
+/** A stored "PIN" on a permission that can't use one counts as Not allowed (the server treats it that way too). */
+const shown = (p: Permission, level: PermissionLevel): PermissionLevel => (level === "PIN" && !canUsePin(p) ? "DENY" : level);
 
 /** Employees, their PINs and roles, and what each role may do. */
 export function StaffScreen() {
@@ -70,6 +83,7 @@ export function StaffScreen() {
                   {Object.keys(s.permissionOverrides).length ? ` · ${Object.keys(s.permissionOverrides).length} custom` : ""}
                   {s.active ? "" : " · inactive"}
                   {s.hasPin ? "" : " · no PIN sign-in yet"}
+                  {s.hasPassword ? "" : " · no website password"}
                 </Text>
               </Pressable>
             )}
@@ -95,11 +109,85 @@ export function StaffScreen() {
     <Text style={ui.muted}>Pick an employee to edit, or add one. Each employee signs in with their own PIN.</Text>
   );
 
-  if (compact) return <View style={[ui.panel, { flex: 1, margin: 8 }]}>{editing ? form : list}</View>;
+  if (compact) {
+    return (
+      <View style={[ui.panel, { flex: 1, margin: 8, gap: 8 }]}>
+        {editing ? form : list}
+        {!editing && <OwnPassword />}
+      </View>
+    );
+  }
   return (
-    <View style={{ flex: 1, flexDirection: "row", gap: 16, padding: 16 }}>
-      <View style={[ui.panel, { flex: view === "roles" ? 3 : 2 }]}>{list}</View>
-      {view === "people" && <View style={[ui.panel, { flex: 3 }]}>{form}</View>}
+    <View style={{ flex: 1, padding: 16, gap: 12 }}>
+      <View style={{ flex: 1, flexDirection: "row", gap: 16 }}>
+        <View style={[ui.panel, { flex: view === "roles" ? 3 : 2 }]}>{list}</View>
+        {view === "people" && <View style={[ui.panel, { flex: 3 }]}>{form}</View>}
+      </View>
+      <View style={ui.panel}>
+        <OwnPassword />
+      </View>
+    </View>
+  );
+}
+
+/** A "Change my password" link at the bottom of the screen that unfolds the form. */
+function OwnPassword() {
+  const [open, setOpen] = useState(false);
+  if (!open) {
+    return (
+      <Pressable onPress={() => setOpen(true)} accessibilityRole="button" style={{ paddingVertical: 6 }}>
+        <Text style={{ color: colors.link, fontSize: 14 }}>Change my website password</Text>
+      </Pressable>
+    );
+  }
+  return <ChangePasswordForm onClose={() => setOpen(false)} />;
+}
+
+/**
+ * Change the signed-in employee's own website password. The server confirms
+ * it with the current password, or with the register PIN when no password
+ * has been set yet. Used on the Staff screen and in the back-office header.
+ */
+export function ChangePasswordForm({ onClose }: { onClose?: () => void }) {
+  const [current, setCurrent] = useState("");
+  const [password, setPassword] = useState("");
+  const [again, setAgain] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  async function submit() {
+    setError(null);
+    const problem = passwordProblem(password);
+    if (problem) return setError(problem);
+    if (password !== again) return setError("The new passwords don't match");
+    setBusy(true);
+    try {
+      await api("POST", "/auth/password", { current, password });
+      setCurrent("");
+      setPassword("");
+      setAgain("");
+      setDone(true);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <View style={{ gap: 8 }}>
+      <Text style={ui.h2}>Change my website password</Text>
+      <Text style={ui.muted}>Confirm with your current website password. If you don't have one yet, enter your register PIN instead.</Text>
+      <TextInput style={ui.input} value={current} onChangeText={setCurrent} placeholder="Current password (or register PIN)" secureTextEntry autoCapitalize="none" autoComplete="current-password" placeholderTextColor={colors.muted} />
+      <TextInput style={ui.input} value={password} onChangeText={setPassword} placeholder={`New password (${PASSWORD_MIN}–${PASSWORD_MAX} characters)`} secureTextEntry autoCapitalize="none" autoComplete="new-password" placeholderTextColor={colors.muted} />
+      <TextInput style={ui.input} value={again} onChangeText={setAgain} placeholder="New password again" secureTextEntry autoCapitalize="none" autoComplete="new-password" onSubmitEditing={submit} placeholderTextColor={colors.muted} />
+      {error && <Text style={ui.error}>{error}</Text>}
+      {done && <Text style={ui.text}>Password changed. Use it next time you sign in to the website.</Text>}
+      <View style={[ui.row, { gap: 8 }]}>
+        {onClose && <Button title={done ? "Close" : "Cancel"} kind="secondary" onPress={onClose} />}
+        <Button title="Change password" onPress={submit} busy={busy} disabled={!current || !password || !again} style={{ flex: 1 }} />
+      </View>
     </View>
   );
 }
@@ -107,6 +195,7 @@ export function StaffScreen() {
 function StaffForm({ initial, roleDefaults, onDone }: { initial: StaffRow; roleDefaults: RoleRow[]; onDone: () => void }) {
   const [s, setS] = useState<StaffRow>(initial);
   const [pin, setPin] = useState("");
+  const [password, setPassword] = useState("");
   const [limit, setLimit] = useState(initial.discountMaxBps == null ? "" : String(initial.discountMaxBps / 100));
   const [error, setError] = useState<string | null>(null);
   const set = (patch: Partial<StaffRow>) => setS((x) => ({ ...x, ...patch }));
@@ -114,14 +203,19 @@ function StaffForm({ initial, roleDefaults, onDone }: { initial: StaffRow; roleD
 
   async function save() {
     setError(null);
+    const problem = password ? passwordProblem(password) : null;
+    if (problem) return setError(problem);
+    // A stored PIN on a page-gate permission shows as Not allowed, so save it that way.
+    const permissionOverrides = Object.fromEntries(Object.entries(s.permissionOverrides).map(([k, v]) => [k, shown(k as Permission, v)]));
     const body = {
       name: s.name,
       email: s.email,
       role: s.role,
       active: s.active,
-      permissionOverrides: s.permissionOverrides,
+      permissionOverrides,
       discountMaxBps: limit.trim() === "" ? null : Math.round(Number(limit) * 100),
       ...(pin ? { pin } : {}),
+      ...(password ? { password } : {}),
     };
     try {
       if (s.id) await api("PATCH", `/staff/${s.id}`, body);
@@ -146,6 +240,20 @@ function StaffForm({ initial, roleDefaults, onDone }: { initial: StaffRow; roleD
         secureTextEntry
         placeholderTextColor={colors.muted}
       />
+      <TextInput
+        style={ui.input}
+        value={password}
+        onChangeText={setPassword}
+        placeholder={s.id ? "Website password (leave empty to keep)" : "Website password (optional)"}
+        secureTextEntry
+        autoCapitalize="none"
+        autoComplete="off"
+        placeholderTextColor={colors.muted}
+      />
+      <Text style={ui.muted}>
+        The website password ({PASSWORD_MIN}–{PASSWORD_MAX} characters) signs in to the back office; it also needs "Sign in to the back-office website" allowed.
+        {s.id && !s.hasPassword ? " None set yet." : ""}
+      </Text>
       <View style={[ui.row, { gap: 8 }]}>
         {(["CASHIER", "MANAGER", "OWNER"] as const).map((r) => (
           <Button key={r} title={r[0] + r.slice(1).toLowerCase()} kind={s.role === r ? "primary" : "secondary"} onPress={() => set({ role: r })} style={{ flex: 1 }} />
@@ -162,10 +270,11 @@ function StaffForm({ initial, roleDefaults, onDone }: { initial: StaffRow; roleD
           <Text style={ui.h2}>Permissions for this employee</Text>
           <Text style={ui.muted}>Tap to change. Faded = the role's setting; bold = set just for this person.</Text>
           {PermissionKeys.map((p) => {
-            const own = s.permissionOverrides[p];
-            const level = own ?? roleRow?.permissions[p] ?? "DENY";
+            const stored = s.permissionOverrides[p];
+            const own = stored === undefined ? undefined : shown(p, stored);
+            const level = shown(p, own ?? roleRow?.permissions[p] ?? "DENY");
             const cycle = () => {
-              const next: (PermissionLevel | undefined)[] = ["ALLOW", "PIN", "DENY", undefined];
+              const next: (PermissionLevel | undefined)[] = [...levelsFor(p), undefined];
               const i = next.indexOf(own);
               const value = next[(i + 1) % next.length];
               const overrides = { ...s.permissionOverrides };
@@ -200,12 +309,21 @@ function RolesEditor({ roles, canEdit, onSaved }: { roles: RoleRow[]; canEdit: b
 
   const cycle = (role: RoleRow["role"], p: Permission) =>
     setDraft((d) =>
-      d.map((r) => (r.role === role ? { ...r, permissions: { ...r.permissions, [p]: ({ ALLOW: "PIN", PIN: "DENY", DENY: "ALLOW" } as const)[r.permissions[p]] } } : r)),
+      d.map((r) => {
+        if (r.role !== role) return r;
+        const levels = levelsFor(p);
+        const next = levels[(levels.indexOf(shown(p, r.permissions[p])) + 1) % levels.length]!;
+        return { ...r, permissions: { ...r.permissions, [p]: next } };
+      }),
     );
 
   async function save() {
     try {
-      for (const r of draft) await api("PUT", `/roles/${r.role}`, { permissions: r.permissions, discountMaxBps: r.discountMaxBps });
+      for (const r of draft) {
+        // Save what's shown: a stored PIN on a page-gate permission is Not allowed.
+        const permissions = Object.fromEntries(Object.entries(r.permissions).map(([k, v]) => [k, shown(k as Permission, v)]));
+        await api("PUT", `/roles/${r.role}`, { permissions, discountMaxBps: r.discountMaxBps });
+      }
       setMessage("Saved. Changes apply right away, even to employees already signed in.");
       onSaved();
     } catch (e) {
@@ -231,7 +349,7 @@ function RolesEditor({ roles, canEdit, onSaved }: { roles: RoleRow[]; canEdit: b
               <Text style={[ui.text, { flex: 1 }]}>{PERMISSIONS[p].label}</Text>
               {draft.map((r) => (
                 <Pressable key={r.role} disabled={!canEdit} onPress={() => cycle(r.role, p)} style={{ width: 110, alignItems: "center", paddingVertical: 6 }}>
-                  <Text style={{ color: permissionColor(r.permissions[p]), fontWeight: "600" }}>{LEVEL_LABEL[r.permissions[p]]}</Text>
+                  <Text style={{ color: permissionColor(shown(p, r.permissions[p])), fontWeight: "600" }}>{LEVEL_LABEL[shown(p, r.permissions[p])]}</Text>
                 </Pressable>
               ))}
             </View>
@@ -251,7 +369,7 @@ function RolesEditor({ roles, canEdit, onSaved }: { roles: RoleRow[]; canEdit: b
           />
         ))}
       </View>
-      <Text style={ui.muted}>Owners can always do everything. "Needs PIN" means a manager (anyone allowed) enters their PIN at the register.</Text>
+      <Text style={ui.muted}>Owners can always do everything. "Needs PIN" means a manager (anyone allowed) enters their PIN at the register. Permissions that open a page or sign-in can only be Allowed or Not allowed.</Text>
       {message && <Text style={ui.text}>{message}</Text>}
       {canEdit && <Button title="Save role permissions" kind="good" onPress={save} />}
     </ScrollView>

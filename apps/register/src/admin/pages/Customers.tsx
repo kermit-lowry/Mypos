@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { api, ApiError, type Customer } from "../../api";
+import { useGuard } from "../../approval";
 import { Button } from "../../components/Button";
 import { SplitPane } from "../../components/SplitPane";
 import { useCan } from "../../session";
@@ -17,6 +18,7 @@ interface Detail extends Customer {
 /** Find a customer; see and adjust balances; recent sales. */
 export function Customers() {
   const can = useCan();
+  const guard = useGuard();
   const [q, setQ] = useState("");
   const [results, setResults] = useState<Customer[]>([]);
   const [picked, setPicked] = useState<Detail | null>(null);
@@ -44,12 +46,13 @@ export function Customers() {
     setShowRight(true);
     setMessage(null);
   };
+  /** Runs an action and refreshes the customer. `fn` resolving to false means it was cancelled at the PIN pad: refresh, but no "done" message. */
   const run = async (fn: () => Promise<unknown>, ok: string) => {
     setMessage(null);
     try {
-      await fn();
+      const r = await fn();
       if (picked) await open(picked);
-      setMessage(ok);
+      if (r !== false) setMessage(ok);
     } catch (e) {
       setMessage(e instanceof ApiError ? e.message : String(e));
     }
@@ -100,12 +103,22 @@ export function Customers() {
                   <Field label="Store credit ($, + or −)"><Input value={credit} onChange={setCredit} keyboard="default" /></Field>
                   <Field label="Points (+ or −)"><Input value={points} onChange={setPoints} keyboard="default" /></Field>
                   <Field label="Reason"><Input value={reason} onChange={setReason} placeholder="e.g. Goodwill" /></Field>
-                  <Button title="Apply" disabled={!reason.trim() || (!credit && !points)} onPress={() => run(async () => {
+                  <Button title={can("ADJUST_BALANCES") === "PIN" ? "Apply · PIN" : "Apply"} disabled={!reason.trim() || (!credit && !points)} onPress={() => run(async () => {
                     const c = Math.round(Number(credit) * 100);
                     const p = Math.round(Number(points));
-                    if (credit && Number.isFinite(c) && c !== 0) await api("POST", `/customers/${picked.id}/credit`, { amountCents: c, reason: reason.trim() });
-                    if (points && Number.isFinite(p) && p !== 0) await api("POST", `/customers/${picked.id}/loyalty`, { unit: "POINTS", amount: p, reason: reason.trim() });
-                    setCredit(""); setPoints(""); setReason("");
+                    // Approval grants are single-use, so each call asks on its own; a field is cleared once its change is in.
+                    if (credit && Number.isFinite(c) && c !== 0) {
+                      const r = await guard("ADJUST_BALANCES", async (t) => (await api("POST", `/customers/${picked.id}/credit`, { amountCents: c, reason: reason.trim() }, { approvalToken: t }), true));
+                      if (r === undefined) return false;
+                      setCredit("");
+                    }
+                    if (points && Number.isFinite(p) && p !== 0) {
+                      const r = await guard("ADJUST_BALANCES", async (t) => (await api("POST", `/customers/${picked.id}/loyalty`, { unit: "POINTS", amount: p, reason: reason.trim() }, { approvalToken: t }), true));
+                      if (r === undefined) return false;
+                      setPoints("");
+                    }
+                    setReason("");
+                    return true;
                   }, "Balances updated")} />
                 </View>
               </Card>

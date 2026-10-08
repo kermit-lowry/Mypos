@@ -10,7 +10,7 @@ import { useLayout } from "../layout";
 import { ActivityScreen } from "../screens/ActivityScreen";
 import { DealsScreen } from "../screens/DealsScreen";
 import { LoyaltySettingsScreen } from "../screens/LoyaltySettingsScreen";
-import { StaffScreen } from "../screens/StaffScreen";
+import { ChangePasswordForm, StaffScreen } from "../screens/StaffScreen";
 import { StoreSettingsScreen } from "../screens/StoreSettingsScreen";
 import { SessionContext, type Session, type Staff } from "../session";
 import { colors, theme, ui } from "../theme";
@@ -112,7 +112,8 @@ export function AdminApp() {
   const [session, setSession] = useState<Signed | null>(null);
   const [page, setPage] = useState<PageId>(() => savedPage() ?? "dashboard");
   const [menu, setMenu] = useState(false);
-  const { narrow } = useLayout();
+  const [changingPassword, setChangingPassword] = useState(false);
+  const { narrow, dialog } = useLayout();
 
   // Resume a session kept in the browser.
   useEffect(() => {
@@ -179,10 +180,22 @@ export function AdminApp() {
                     {session.staff.name}
                   </Text>
                 )}
+                <Pressable onPress={() => setChangingPassword(true)} accessibilityRole="button">
+                  <Text style={{ color: colors.link, fontSize: 14 }} numberOfLines={1}>
+                    {narrow ? "Password" : "Change password"}
+                  </Text>
+                </Pressable>
                 <Pressable onPress={signOut}>
                   <Text style={{ color: colors.link, fontSize: 14 }}>Sign out</Text>
                 </Pressable>
               </View>
+              <Modal visible={changingPassword} transparent animationType="fade" onRequestClose={() => setChangingPassword(false)}>
+                <View style={{ flex: 1, backgroundColor: colors.overlay, justifyContent: "center", alignItems: "center", padding: 12 }}>
+                  <View style={[ui.panel, { width: dialog(420) }]}>
+                    <ChangePasswordForm onClose={() => setChangingPassword(false)} />
+                  </View>
+                </View>
+              </Modal>
               {current ? (
                 <View style={{ flex: 1 }} key={`${current.id}-${session.location.id}`}>
                   {PAGES[current.id]({ onLocationSaved: (location) => setSession({ ...session, location, locations: session.locations.map((l) => (l.id === location.id ? location : l)) }) })}
