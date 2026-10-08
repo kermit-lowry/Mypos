@@ -236,7 +236,7 @@ function TicketLine({ line, offer, onChange, onRemove }: { line: Line; offer: { 
               </View>
             </View>
             <Pressable onPress={() => setShowWhy((x) => !x)}>
-              <Text style={[ui.muted, { color: colors.accent }]}>{showWhy ? "Hide" : "Why this offer?"}</Text>
+              <Text style={[ui.muted, { color: colors.link }]}>{showWhy ? "Hide" : "Why this offer?"}</Text>
             </Pressable>
             {showWhy && s.notes.map((n, i) => <Text key={i} style={ui.muted}>• {n}</Text>)}
           </>

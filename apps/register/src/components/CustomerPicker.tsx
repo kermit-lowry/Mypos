@@ -45,7 +45,7 @@ export function CustomerPicker({ customer, onChange }: { customer: Customer | nu
         )}
       </Pressable>
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-        <View style={{ flex: 1, backgroundColor: "#000a", justifyContent: "center", padding: compact ? 12 : 80 }}>
+        <View style={{ flex: 1, backgroundColor: colors.overlay, justifyContent: "center", padding: compact ? 12 : 80 }}>
           <View style={[ui.panel, { maxHeight: "90%" }]}>
             <Text style={ui.h1}>Customer</Text>
             <TextInput

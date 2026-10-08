@@ -5,6 +5,11 @@ export interface Range {
   from: Date;
   to: Date;
   locationId?: string;
+  /** Narrow item-level reports to one brand / category / vendor / product type. */
+  brandId?: string;
+  categoryId?: string;
+  vendorId?: string;
+  kind?: string;
 }
 
 const orderWhere = (r: Range): Prisma.OrderWhereInput => ({
@@ -13,14 +18,30 @@ const orderWhere = (r: Range): Prisma.OrderWhereInput => ({
   ...(r.locationId ? { locationId: r.locationId } : {}),
 });
 
+/** Which products a report covers (brand, category, vendor, kind). */
+export const productWhere = (r: Pick<Range, "brandId" | "categoryId" | "vendorId" | "kind">): Prisma.ProductWhereInput => ({
+  ...(r.brandId ? { brandId: r.brandId } : {}),
+  ...(r.categoryId ? { categoryId: r.categoryId } : {}),
+  ...(r.vendorId ? { vendors: { some: { vendorId: r.vendorId } } } : {}),
+  ...(r.kind ? { kind: r.kind as Prisma.ProductWhereInput["kind"] } : {}),
+});
+const hasProductFilter = (r: Range) => !!(r.brandId || r.categoryId || r.vendorId || r.kind);
+const variantWhere = (r: Range): Prisma.VariantWhereInput | undefined => (hasProductFilter(r) ? { product: productWhere(r) } : undefined);
+/** Sold lines in the range, for the products the report covers. */
+const lineWhere = (r: Range): Prisma.OrderLineWhereInput => ({ order: orderWhere(r), ...(hasProductFilter(r) ? { variant: variantWhere(r) } : {}) });
+
 /** Net value of a line after refunds and all discounts. */
 const lineNet = (l: { unitPriceCents: number; quantity: number; discountCents: number; refundedQty: number }) =>
   Math.round(((l.unitPriceCents * l.quantity - l.discountCents) * (l.quantity - l.refundedQty)) / l.quantity);
 
 export async function salesSummary(db: Db, r: Range) {
+  const filtered = hasProductFilter(r);
   const [orders, lines, refunds, buylists] = await Promise.all([
-    db.order.findMany({ where: orderWhere(r), select: { id: true, subtotalCents: true, discountCents: true, taxCents: true, totalCents: true, cardAdjustmentCents: true, cardAdjustmentTaxCents: true, loyaltyEarned: true } }),
-    db.orderLine.findMany({ where: { order: orderWhere(r) }, select: { unitPriceCents: true, quantity: true, discountCents: true, promoDiscountCents: true, rewardDiscountCents: true, refundedQty: true, costCents: true } }),
+    db.order.findMany({
+      where: { ...orderWhere(r), ...(filtered ? { lines: { some: { variant: variantWhere(r) } } } : {}) },
+      select: { id: true, subtotalCents: true, discountCents: true, taxCents: true, totalCents: true, cardAdjustmentCents: true, cardAdjustmentTaxCents: true, loyaltyEarned: true },
+    }),
+    db.orderLine.findMany({ where: lineWhere(r), select: { unitPriceCents: true, quantity: true, discountCents: true, promoDiscountCents: true, rewardDiscountCents: true, refundedQty: true, costCents: true } }),
     db.payment.aggregate({ where: { amountCents: { lt: 0 }, status: "APPROVED", createdAt: { gte: r.from, lt: r.to }, order: r.locationId ? { locationId: r.locationId } : {} }, _sum: { amountCents: true } }),
     db.buylistTicket.aggregate({ where: { status: "ACCEPTED", acceptedAt: { gte: r.from, lt: r.to }, ...(r.locationId ? { locationId: r.locationId } : {}) }, _sum: { paidCents: true }, _count: true }),
   ]);
@@ -53,14 +74,22 @@ export async function salesSummary(db: Db, r: Range) {
 /** Sales per day / week / month / hour, in the store's time zone. */
 export async function salesByPeriod(db: Db, r: Range, group: "hour" | "day" | "week" | "month", timeZone: string) {
   const loc = r.locationId ?? null;
+  const brand = r.brandId ?? null;
+  const category = r.categoryId ?? null;
+  const vendor = r.vendorId ?? null;
+  const kind = r.kind ?? null;
   const [sales, taxes] = await Promise.all([
     db.$queryRaw<{ period: Date; orders: bigint; net: bigint; units: bigint }[]>`
       SELECT date_trunc(${group}, o."createdAt" AT TIME ZONE ${timeZone}) AS period,
              COUNT(DISTINCT o.id) AS orders,
              COALESCE(SUM(ROUND((l."unitPriceCents" * l.quantity - l."discountCents") * (l.quantity - l."refundedQty")::numeric / l.quantity)), 0) AS net,
              COALESCE(SUM(l.quantity - l."refundedQty"), 0) AS units
-      FROM "Order" o JOIN "OrderLine" l ON l."orderId" = o.id
+      FROM "Order" o JOIN "OrderLine" l ON l."orderId" = o.id JOIN "Variant" v ON v.id = l."variantId" JOIN "Product" p ON p.id = v."productId"
       WHERE o.status <> 'VOID' AND o."createdAt" >= ${r.from} AND o."createdAt" < ${r.to} AND (${loc}::text IS NULL OR o."locationId" = ${loc})
+        AND (${brand}::text IS NULL OR p."brandId" = ${brand})
+        AND (${category}::text IS NULL OR p."categoryId" = ${category})
+        AND (${kind}::text IS NULL OR p.kind::text = ${kind})
+        AND (${vendor}::text IS NULL OR EXISTS (SELECT 1 FROM "ProductVendor" pv WHERE pv."productId" = p.id AND pv."vendorId" = ${vendor}))
       GROUP BY 1 ORDER BY 1`,
     db.$queryRaw<{ period: Date; tax: bigint }[]>`
       SELECT date_trunc(${group}, o."createdAt" AT TIME ZONE ${timeZone}) AS period, COALESCE(SUM(o."taxCents" + o."cardAdjustmentTaxCents"), 0) AS tax
@@ -73,13 +102,13 @@ export async function salesByPeriod(db: Db, r: Range, group: "hour" | "day" | "w
   return sales.map((x) => ({ period: key(x.period), orders: Number(x.orders), netCents: Number(x.net), taxCents: tax.get(key(x.period)) ?? 0, units: Number(x.units) }));
 }
 
-type Dim = "category" | "kind" | "employee" | "product" | "brand" | "game";
+type Dim = "category" | "kind" | "employee" | "product" | "brand" | "game" | "vendor";
 
-/** Net sales grouped by category / product type / employee / item / brand / game. */
+/** Net sales grouped by category / product type / employee / item / brand / game / vendor. */
 export async function salesBy(db: Db, r: Range, dim: Dim, limit = 100) {
   const lines = await db.orderLine.findMany({
-    where: { order: orderWhere(r) },
-    include: { variant: { include: { product: { include: { category: true } } } }, order: { include: { staff: true } } },
+    where: lineWhere(r),
+    include: { variant: { include: { product: { include: { category: true, vendors: { include: { vendor: true }, orderBy: [{ preferred: "desc" }, { createdAt: "asc" }] } } } } }, order: { include: { staff: true } } },
   });
   const rows = new Map<string, { key: string; label: string; units: number; netCents: number; costCents: number; orders: Set<string> }>();
   for (const l of lines) {
@@ -89,7 +118,8 @@ export async function salesBy(db: Db, r: Range, dim: Dim, limit = 100) {
       : dim === "kind" ? [p.kind, p.kind]
       : dim === "employee" ? [l.order.staffId ?? "none", l.order.staff?.name ?? "Online / unknown"]
       : dim === "product" ? [l.variantId, l.title]
-      : dim === "brand" ? [p.brand ?? "none", p.brand ?? "No brand"]
+      : dim === "brand" ? [p.brandId ?? "none", p.brand ?? "No brand"]
+      : dim === "vendor" ? [p.vendors[0]?.vendorId ?? "none", p.vendors[0]?.vendor.name ?? "No vendor"]
       : [p.game ?? "none", p.game ?? "Not a card"];
     const e = rows.get(key) ?? { key, label, units: 0, netCents: 0, costCents: 0, orders: new Set<string>() };
     const units = l.quantity - l.refundedQty;
@@ -148,16 +178,23 @@ export async function taxReport(db: Db, r: Range) {
   return { taxableSalesCents: taxable, exemptSalesCents: exempt, taxCollectedCents: orders.reduce((a, o) => a + o.taxCents + o.cardAdjustmentTaxCents, 0), orders: orders.length };
 }
 
-/** What's on the shelves, at cost and at retail, by category. */
-export async function inventoryValuation(db: Db, locationId?: string) {
+export type StockFilter = Pick<Range, "locationId" | "brandId" | "categoryId" | "vendorId" | "kind">;
+const levelWhere = (f: StockFilter): Prisma.InventoryLevelWhereInput => ({
+  ...(f.locationId ? { locationId: f.locationId } : {}),
+  ...(f.brandId || f.categoryId || f.vendorId || f.kind ? { variant: { product: productWhere(f) } } : {}),
+});
+
+/** What's on the shelves, at cost and at retail, by category or brand. */
+export async function inventoryValuation(db: Db, f: StockFilter | string | undefined, by: "category" | "brand" = "category") {
+  const filter: StockFilter = typeof f === "string" ? { locationId: f } : (f ?? {});
   const levels = await db.inventoryLevel.findMany({
-    where: { ...(locationId ? { locationId } : {}), onHand: { gt: 0 } },
+    where: { ...levelWhere(filter), onHand: { gt: 0 } },
     include: { variant: { include: { product: { include: { category: true } } } } },
   });
   const rows = new Map<string, { category: string; units: number; costCents: number; retailCents: number; skus: number }>();
   let total = { units: 0, costCents: 0, retailCents: 0, skus: 0 };
   for (const l of levels) {
-    const key = l.variant.product.category?.name ?? "Uncategorized";
+    const key = by === "brand" ? (l.variant.product.brand ?? "No brand") : (l.variant.product.category?.name ?? "Uncategorized");
     const e = rows.get(key) ?? { category: key, units: 0, costCents: 0, retailCents: 0, skus: 0 };
     e.units += l.onHand;
     e.costCents += (l.variant.costCents ?? 0) * l.onHand;
@@ -169,11 +206,12 @@ export async function inventoryValuation(db: Db, locationId?: string) {
   return { byCategory: [...rows.values()].sort((a, b) => b.retailCents - a.retailCents), total };
 }
 
-export async function lowStock(db: Db, locationId?: string) {
-  const levels = await db.inventoryLevel.findMany({ where: { ...(locationId ? { locationId } : {}), lowStockQty: { not: null } }, include: { variant: { include: { product: true } }, location: true } });
+export async function lowStock(db: Db, f: StockFilter | string | undefined) {
+  const filter: StockFilter = typeof f === "string" ? { locationId: f } : (f ?? {});
+  const levels = await db.inventoryLevel.findMany({ where: { ...levelWhere(filter), lowStockQty: { not: null } }, include: { variant: { include: { product: true } }, location: true } });
   return levels
     .filter((l) => l.onHand <= (l.lowStockQty ?? 0))
-    .map((l) => ({ variantId: l.variantId, sku: l.variant.sku, title: l.variant.product.title, location: l.location.name, onHand: l.onHand, lowStockQty: l.lowStockQty }))
+    .map((l) => ({ variantId: l.variantId, sku: l.variant.sku, title: l.variant.product.title, brand: l.variant.product.brand, location: l.location.name, onHand: l.onHand, lowStockQty: l.lowStockQty }))
     .sort((a, b) => a.onHand - b.onHand);
 }
 
@@ -181,10 +219,10 @@ export async function lowStock(db: Db, locationId?: string) {
 export async function noSales(db: Db, r: Range, limit = 200) {
   const sold = await db.orderLine.findMany({ where: { order: orderWhere(r) }, select: { variantId: true }, distinct: ["variantId"] });
   const soldIds = new Set(sold.map((s) => s.variantId));
-  const levels = await db.inventoryLevel.findMany({ where: { ...(r.locationId ? { locationId: r.locationId } : {}), onHand: { gt: 0 } }, include: { variant: { include: { product: true } } } });
+  const levels = await db.inventoryLevel.findMany({ where: { ...levelWhere(r), onHand: { gt: 0 } }, include: { variant: { include: { product: true } } } });
   return levels
     .filter((l) => !soldIds.has(l.variantId))
-    .map((l) => ({ variantId: l.variantId, sku: l.variant.sku, title: l.variant.product.title, onHand: l.onHand, retailCents: l.variant.priceCents * l.onHand, costCents: (l.variant.costCents ?? 0) * l.onHand }))
+    .map((l) => ({ variantId: l.variantId, sku: l.variant.sku, title: l.variant.product.title, brand: l.variant.product.brand, onHand: l.onHand, retailCents: l.variant.priceCents * l.onHand, costCents: (l.variant.costCents ?? 0) * l.onHand }))
     .sort((a, b) => b.retailCents - a.retailCents)
     .slice(0, limit);
 }
@@ -246,4 +284,84 @@ export function toCsv(rows: Record<string, unknown>[]): string {
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   return [cols.join(","), ...rows.map((r) => cols.map((c) => cell(r[c])).join(","))].join("\n");
+}
+
+/** Purchase orders and deliveries in a range: what's open, what arrived, what it cost. */
+export async function purchaseReport(db: Db, r: Range, vendorId?: string) {
+  const where = { ...(r.locationId ? { locationId: r.locationId } : {}), ...(vendorId ? { vendorId } : {}) };
+  const [orders, receipts] = await Promise.all([
+    db.purchaseOrder.findMany({ where: { ...where, createdAt: { gte: r.from, lt: r.to } }, include: { vendor: true, lines: true } }),
+    db.purchaseReceipt.findMany({
+      where: { receivedAt: { gte: r.from, lt: r.to }, purchaseOrder: where },
+      include: { lines: true, purchaseOrder: { include: { vendor: true, location: true } } },
+      orderBy: { receivedAt: "desc" },
+    }),
+  ]);
+  const byVendor = new Map<string, { vendor: string; orders: number; openOrders: number; orderedCents: number; receivedQty: number; spendCents: number }>();
+  for (const o of orders) {
+    const e = byVendor.get(o.vendorId) ?? { vendor: o.vendor.name, orders: 0, openOrders: 0, orderedCents: 0, receivedQty: 0, spendCents: 0 };
+    e.orders++;
+    if (o.status === "ORDERED" || o.status === "PARTIAL" || o.status === "DRAFT") e.openOrders++;
+    e.orderedCents += o.lines.reduce((a, l) => a + l.quantity * l.unitCostCents, 0) + o.shippingCents;
+    byVendor.set(o.vendorId, e);
+  }
+  let receivedQty = 0;
+  let spend = 0;
+  for (const rc of receipts) {
+    const qty = rc.lines.reduce((a, l) => a + l.quantity, 0);
+    const cost = rc.lines.reduce((a, l) => a + l.quantity * l.unitCostCents, 0);
+    receivedQty += qty;
+    spend += cost;
+    const e = byVendor.get(rc.purchaseOrder.vendorId) ?? { vendor: rc.purchaseOrder.vendor.name, orders: 0, openOrders: 0, orderedCents: 0, receivedQty: 0, spendCents: 0 };
+    e.receivedQty += qty;
+    e.spendCents += cost;
+    byVendor.set(rc.purchaseOrder.vendorId, e);
+  }
+  return {
+    orders: orders.length,
+    openOrders: orders.filter((o) => o.status === "ORDERED" || o.status === "PARTIAL" || o.status === "DRAFT").length,
+    finishedOrders: orders.filter((o) => o.status === "RECEIVED").length,
+    receivedQty,
+    receiptSpendCents: spend,
+    byVendor: [...byVendor.values()].sort((a, b) => b.spendCents - a.spendCents),
+    receipts: receipts.map((rc) => ({
+      receiptId: rc.id,
+      poNumber: rc.purchaseOrder.number,
+      vendor: rc.purchaseOrder.vendor.name,
+      location: rc.purchaseOrder.location.name,
+      reference: rc.reference,
+      receivedAt: rc.receivedAt,
+      items: rc.lines.length,
+      quantity: rc.lines.reduce((a, l) => a + l.quantity, 0),
+      costCents: rc.lines.reduce((a, l) => a + l.quantity * l.unitCostCents, 0),
+    })),
+  };
+}
+
+/** Finished transfers in a range, valued by destination and then category. */
+export async function transferReport(db: Db, r: Range) {
+  const transfers = await db.transfer.findMany({
+    where: { status: "RECEIVED", receivedAt: { gte: r.from, lt: r.to }, ...(r.locationId ? { OR: [{ fromLocationId: r.locationId }, { toLocationId: r.locationId }] } : {}) },
+    include: { fromLocation: true, toLocation: true, lines: { include: { variant: { include: { product: { include: { category: true } } } } } } },
+  });
+  const rows = new Map<string, { destination: string; category: string; transfers: Set<string>; qtySent: number; qtyReceived: number; costSentCents: number; costReceivedCents: number; priceSentCents: number; priceReceivedCents: number }>();
+  for (const t of transfers) {
+    for (const l of t.lines) {
+      const category = l.variant.product.category?.name ?? "Uncategorized";
+      const key = `${t.toLocationId}|${category}`;
+      const e = rows.get(key) ?? { destination: t.toLocation.name, category, transfers: new Set<string>(), qtySent: 0, qtyReceived: 0, costSentCents: 0, costReceivedCents: 0, priceSentCents: 0, priceReceivedCents: 0 };
+      const cost = l.variant.costCents ?? 0;
+      e.transfers.add(t.id);
+      e.qtySent += l.quantity;
+      e.qtyReceived += l.receivedQty;
+      e.costSentCents += cost * l.quantity;
+      e.costReceivedCents += cost * l.receivedQty;
+      e.priceSentCents += l.variant.priceCents * l.quantity;
+      e.priceReceivedCents += l.variant.priceCents * l.receivedQty;
+      rows.set(key, e);
+    }
+  }
+  const list = [...rows.values()].map((e) => ({ ...e, transfers: e.transfers.size })).sort((a, b) => a.destination.localeCompare(b.destination) || b.priceReceivedCents - a.priceReceivedCents);
+  const total = list.reduce((a, e) => ({ qtySent: a.qtySent + e.qtySent, qtyReceived: a.qtyReceived + e.qtyReceived, costSentCents: a.costSentCents + e.costSentCents, costReceivedCents: a.costReceivedCents + e.costReceivedCents, priceSentCents: a.priceSentCents + e.priceSentCents, priceReceivedCents: a.priceReceivedCents + e.priceReceivedCents }), { qtySent: 0, qtyReceived: 0, costSentCents: 0, costReceivedCents: 0, priceSentCents: 0, priceReceivedCents: 0 });
+  return { transfers: transfers.length, rows: list, total };
 }

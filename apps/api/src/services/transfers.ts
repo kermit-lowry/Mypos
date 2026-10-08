@@ -6,7 +6,9 @@ import { audit } from "./permissions.js";
 export interface TransferInput {
   fromLocationId: string;
   toLocationId: string;
+  reference?: string;
   notes?: string;
+  expectedAt?: Date;
   lines: { variantId: string; quantity: number }[];
 }
 

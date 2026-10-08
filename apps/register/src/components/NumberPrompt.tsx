@@ -27,7 +27,7 @@ export function NumberPrompt(props: {
   };
   return (
     <Modal transparent animationType="fade" onRequestClose={props.onClose}>
-      <View style={{ flex: 1, backgroundColor: "#000b", justifyContent: "center", alignItems: "center" }}>
+      <View style={{ flex: 1, backgroundColor: colors.overlay, justifyContent: "center", alignItems: "center" }}>
         <View style={[ui.panel, { width: dialog(380), gap: 12 }]}>
           <Text style={ui.h1}>{props.title}</Text>
           {props.message && <Text style={ui.muted}>{props.message}</Text>}

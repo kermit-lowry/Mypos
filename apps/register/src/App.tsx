@@ -123,7 +123,7 @@ function RegisterApp() {
               </Text>
             )}
             <Pressable onPress={signOut} style={{ padding: 10 }}>
-              <Text style={{ color: colors.accent }}>Sign out</Text>
+              <Text style={{ color: colors.link }}>Sign out</Text>
             </Pressable>
           </View>
           {tab === "Sell" && <SellScreen />}

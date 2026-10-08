@@ -10,21 +10,29 @@ interface Props {
   style?: ViewStyle;
 }
 
+const LOOK = {
+  primary: { bg: colors.primary, fg: colors.onPrimary },
+  secondary: { bg: colors.panelAlt, fg: colors.text },
+  danger: { bg: colors.bad, fg: "#ffffff" },
+  good: { bg: colors.good, fg: "#ffffff" },
+} as const;
+
 export function Button({ title, onPress, kind = "primary", disabled, busy, style }: Props) {
-  const bg = { primary: colors.accent, secondary: colors.panelAlt, danger: colors.bad, good: colors.good }[kind];
+  const look = LOOK[kind];
   return (
     <Pressable
       accessibilityRole="button"
       onPress={onPress}
       disabled={disabled || busy}
-      style={({ pressed }) => [styles.btn, { backgroundColor: bg, opacity: disabled ? 0.4 : pressed ? 0.75 : 1 }, style]}
+      style={({ pressed }) => [styles.btn, { backgroundColor: look.bg, opacity: disabled ? 0.4 : pressed ? 0.75 : 1 }, kind === "secondary" && styles.outlined, style]}
     >
-      {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.label}>{title}</Text>}
+      {busy ? <ActivityIndicator color={look.fg} /> : <Text style={[styles.label, { color: look.fg }]}>{title}</Text>}
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   btn: { borderRadius: 10, paddingVertical: 14, paddingHorizontal: 18, alignItems: "center", justifyContent: "center", minHeight: 50 },
-  label: { color: "#fff", fontSize: 16, fontWeight: "600" },
+  outlined: { borderWidth: 1, borderColor: colors.border },
+  label: { fontSize: 16, fontWeight: "600" },
 });

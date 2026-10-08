@@ -64,7 +64,7 @@ export function ApprovalProvider({ children }: { children: ReactNode }) {
       {children}
       {req && (
         <Modal transparent animationType="fade" onRequestClose={() => finish(null)}>
-          <View style={{ flex: 1, backgroundColor: "#000c", justifyContent: "center", alignItems: "center" }}>
+          <View style={{ flex: 1, backgroundColor: colors.overlay, justifyContent: "center", alignItems: "center" }}>
             <View style={[ui.panel, { width: dialog(380), gap: 12, alignItems: "center" }]}>
               <Text style={ui.h1}>Manager approval</Text>
               <Text style={[ui.muted, { textAlign: "center" }]}>

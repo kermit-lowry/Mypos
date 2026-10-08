@@ -56,10 +56,10 @@ export function LoginScreen({ onSignedIn }: { onSignedIn: (staff: Staff, permiss
         {error && <Text style={[ui.error, { textAlign: "center" }]}>{error}</Text>}
         <View style={[ui.row, { gap: 16 }]}>
           <Pressable onPress={() => setUseEmail((x) => !x)}>
-            <Text style={{ color: colors.accent }}>{useEmail ? "PIN only" : "Use email + PIN"}</Text>
+            <Text style={{ color: colors.link }}>{useEmail ? "PIN only" : "Use email + PIN"}</Text>
           </Pressable>
           <Pressable onPress={() => setShowServer((x) => !x)}>
-            <Text style={{ color: colors.accent }}>Server</Text>
+            <Text style={{ color: colors.link }}>Server</Text>
           </Pressable>
         </View>
         {showServer && (

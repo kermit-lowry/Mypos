@@ -10,17 +10,20 @@ export function reportRoutes(app: FastifyInstance, base: Ctx) {
   const { prisma } = base;
   const reports = { preHandler: requirePermission("VIEW_REPORTS") };
 
-  const RangeQuery = z.object({
-    from: z.coerce.date(),
-    to: z.coerce.date(),
-    locationId: z.string().optional(),
-    format: z.enum(["json", "csv"]).default("json"),
+  /** Item filters every stock and sales report takes: find anything by brand, category, vendor, or product type. */
+  const ItemFilter = z.object({
+    brandId: z.string().optional(),
+    categoryId: z.string().optional(),
+    vendorId: z.string().optional(),
+    kind: z.string().optional(),
   });
+  const StockQuery = ItemFilter.extend({ locationId: z.string().optional(), format: z.enum(["json", "csv"]).default("json") });
+  const RangeQuery = StockQuery.extend({ from: z.coerce.date(), to: z.coerce.date() });
   async function range(q: z.infer<typeof RangeQuery>): Promise<R.Range & { timeZone: string }> {
     if (q.to <= q.from) throw badRequest("RANGE", "End must be after start");
     if (q.to.getTime() - q.from.getTime() > 400 * 86_400_000) throw badRequest("RANGE", "Pick a range of up to a year");
     const loc = q.locationId ? await prisma.location.findUnique({ where: { id: q.locationId } }) : await prisma.location.findFirst({ orderBy: { createdAt: "asc" } });
-    return { from: q.from, to: q.to, locationId: q.locationId, timeZone: loc?.timezone ?? "America/New_York" };
+    return { from: q.from, to: q.to, locationId: q.locationId, brandId: q.brandId, categoryId: q.categoryId, vendorId: q.vendorId, kind: q.kind, timeZone: loc?.timezone ?? "America/New_York" };
   }
   const send = (reply: FastifyReply, format: "json" | "csv", name: string, rows: unknown) => {
     if (format !== "csv") return rows;
@@ -46,7 +49,7 @@ export function reportRoutes(app: FastifyInstance, base: Ctx) {
   });
 
   app.get("/reports/sales-by/:dim", reports, async (req, reply) => {
-    const dim = parse(z.enum(["category", "kind", "employee", "product", "brand", "game"]), (req.params as { dim: string }).dim);
+    const dim = parse(z.enum(["category", "kind", "employee", "product", "brand", "game", "vendor"]), (req.params as { dim: string }).dim);
     const q = parse(RangeQuery.extend({ limit: z.coerce.number().int().min(1).max(1000).default(100) }), req.query);
     return send(reply, q.format, `sales-by-${dim}`, await R.salesBy(prisma, await range(q), dim, q.limit));
   });
@@ -78,15 +81,27 @@ export function reportRoutes(app: FastifyInstance, base: Ctx) {
     return send(reply, q.format, "no-sales", await R.noSales(prisma, await range(q)));
   });
 
+  app.get("/reports/purchases", reports, async (req, reply) => {
+    const q = parse(RangeQuery.extend({ vendorId: z.string().optional() }), req.query);
+    const r = await R.purchaseReport(prisma, await range(q), q.vendorId);
+    return send(reply, q.format, "purchases", q.format === "csv" ? r.receipts : r);
+  });
+
+  app.get("/reports/transfers", reports, async (req, reply) => {
+    const q = parse(RangeQuery, req.query);
+    const r = await R.transferReport(prisma, await range(q));
+    return send(reply, q.format, "transfers", q.format === "csv" ? r.rows : r);
+  });
+
   app.get("/reports/inventory-valuation", reports, async (req, reply) => {
-    const q = parse(z.object({ locationId: z.string().optional(), format: z.enum(["json", "csv"]).default("json") }), req.query);
-    const r = await R.inventoryValuation(prisma, q.locationId);
+    const q = parse(StockQuery.extend({ by: z.enum(["category", "brand"]).default("category") }), req.query);
+    const r = await R.inventoryValuation(prisma, q, q.by);
     return send(reply, q.format, "inventory-valuation", q.format === "csv" ? r.byCategory : r);
   });
 
   app.get("/reports/low-stock", reports, async (req, reply) => {
-    const q = parse(z.object({ locationId: z.string().optional(), format: z.enum(["json", "csv"]).default("json") }), req.query);
-    return send(reply, q.format, "low-stock", await R.lowStock(prisma, q.locationId));
+    const q = parse(StockQuery, req.query);
+    return send(reply, q.format, "low-stock", await R.lowStock(prisma, q));
   });
 
   /** Inventory movements in a range: receipts, sales, counts, transfers, waste. */
@@ -94,11 +109,11 @@ export function reportRoutes(app: FastifyInstance, base: Ctx) {
     const q = parse(RangeQuery.extend({ reason: z.string().optional(), variantId: z.string().optional() }), req.query);
     const r = await range(q);
     const rows = await prisma.inventoryMovement.findMany({
-      where: { createdAt: { gte: r.from, lt: r.to }, locationId: r.locationId, reason: q.reason as never, variantId: q.variantId },
+      where: { createdAt: { gte: r.from, lt: r.to }, locationId: r.locationId, reason: q.reason as never, variantId: q.variantId, ...(q.brandId || q.categoryId || q.vendorId || q.kind ? { variant: { product: R.productWhere(q) } } : {}) },
       orderBy: { createdAt: "desc" },
       take: 2000,
       include: { variant: { include: { product: true } }, staff: true },
     });
-    return send(reply, q.format, "stock-movements", rows.map((m) => ({ at: m.createdAt, sku: m.variant.sku, title: m.variant.product.title, delta: m.delta, reason: m.reason, note: m.note, staff: m.staff?.name ?? null })));
+    return send(reply, q.format, "stock-movements", rows.map((m) => ({ at: m.createdAt, sku: m.variant.sku, title: m.variant.product.title, brand: m.variant.product.brand, delta: m.delta, reason: m.reason, note: m.note, staff: m.staff?.name ?? null })));
   });
 }

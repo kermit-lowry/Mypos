@@ -153,11 +153,47 @@ enum SalesChannel {
   EBAY
 }
 
+/// A brand (Nike, Supreme, Pokémon…). Products link to one; `Product.brand`
+/// carries the same name for display and search.
+model Brand {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  products  Product[]
+}
+
+/// A vendor that supplies a product, with their item number and price. A
+/// product can have several; the preferred one drives reorder suggestions.
+model ProductVendor {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  vendorId  String
+  vendor    Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  /// The vendor's own item / style number.
+  vendorSku String?
+  /// What this vendor charges per unit, if known (updated by receipts).
+  costCents Int?
+  preferred Boolean  @default(false)
+  leadDays  Int?
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([productId, vendorId])
+  @@index([vendorId])
+}
+
 model Product {
   id          String         @id @default(cuid())
   kind        ProductKind
   title       String
+  /// Brand name (kept equal to `brandRef.name` when linked).
   brand       String?
+  brandId     String?
+  brandRef    Brand?         @relation(fields: [brandId], references: [id])
+  vendors     ProductVendor[]
   description String?
   imageUrl    String?
   channels    SalesChannel[] @default([POS])
@@ -184,6 +220,7 @@ model Product {
 
   @@index([kind])
   @@index([categoryId])
+  @@index([brandId])
   @@index([game, setCode])
   @@index([title])
 }
@@ -326,9 +363,16 @@ model Vendor {
   phone     String?
   notes     String?
   active    Boolean  @default(true)
+  accountNumber     String?
+  contactName       String?
+  website           String?
+  address           String?
+  /// New items from this vendor default to this category.
+  defaultCategoryId String?
   createdAt DateTime @default(now())
 
   purchaseOrders PurchaseOrder[]
+  products       ProductVendor[]
 }
 
 enum PurchaseOrderStatus {
@@ -352,11 +396,36 @@ model PurchaseOrder {
   expectedAt DateTime?
   orderedAt  DateTime?
   receivedAt DateTime?
+  shippingCents Int              @default(0)
   createdById String?
   createdAt  DateTime            @default(now())
   updatedAt  DateTime            @updatedAt
 
-  lines PurchaseOrderLine[]
+  lines    PurchaseOrderLine[]
+  receipts PurchaseReceipt[]
+}
+
+/// One delivery against a purchase order (an order can arrive in several).
+model PurchaseReceipt {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  /// Packing slip / invoice number for this delivery.
+  reference       String?
+  staffId         String?
+  receivedAt      DateTime      @default(now())
+
+  lines PurchaseReceiptLine[]
+}
+
+model PurchaseReceiptLine {
+  id            String          @id @default(cuid())
+  receiptId     String
+  receipt       PurchaseReceipt @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  variantId     String
+  quantity      Int
+  /// What was actually paid per unit on this delivery.
+  unitCostCents Int
 }
 
 model PurchaseOrderLine {
@@ -389,7 +458,9 @@ model Transfer {
   fromLocation   Location       @relation("TransferFrom", fields: [fromLocationId], references: [id])
   toLocationId   String
   toLocation     Location       @relation("TransferTo", fields: [toLocationId], references: [id])
+  reference      String?
   notes          String?
+  expectedAt     DateTime?
   sentAt         DateTime?
   receivedAt     DateTime?
   createdById    String?

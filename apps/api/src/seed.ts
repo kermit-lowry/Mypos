@@ -1,5 +1,6 @@
 /** Demo data: one store, three staff (PIN 1234), and a few TCG + sneaker products. */
 import { prisma } from "./db.js";
+import { brandFor } from "./services/brands.js";
 import { seedCategoriesAndDeals } from "./seedDeals.js";
 import { hashPin } from "./services/permissions.js";
 
@@ -67,7 +68,8 @@ const products = [
 ];
 
 for (const { variants, ...p } of products) {
-  const created = await prisma.product.create({ data: { ...p, variants: { create: variants } }, include: { variants: true } });
+  const brand = await brandFor(prisma, p.brand);
+  const created = await prisma.product.create({ data: { ...p, brand: brand?.name, brandId: brand?.id, variants: { create: variants } }, include: { variants: true } });
   for (const v of created.variants) {
     await prisma.inventoryLevel.create({ data: { variantId: v.id, locationId: location.id, onHand: 4 } });
     await prisma.inventoryMovement.create({ data: { variantId: v.id, locationId: location.id, delta: 4, reason: "RECEIVE", note: "Seed" } });

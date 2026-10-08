@@ -122,12 +122,12 @@ export function AdminApp() {
                         setSession({ ...session, location: session.locations[(i + 1) % session.locations.length]! });
                       }}
                     >
-                      <Text style={[ui.muted, { color: colors.accent }]}>{session.location.name} ▾</Text>
+                      <Text style={[ui.muted, { color: colors.link }]}>{session.location.name} ▾</Text>
                     </Pressable>
                   )}
                   {!narrow && <Text style={ui.muted}>{session.staff.name}</Text>}
                   <Pressable onPress={signOut}>
-                    <Text style={{ color: colors.accent }}>Sign out</Text>
+                    <Text style={{ color: colors.link }}>Sign out</Text>
                   </Pressable>
                 </View>
               </View>
@@ -190,7 +190,7 @@ function WebLogin({ onSignedIn }: { onSignedIn: (s: Signed) => void }) {
           {error && <Text style={ui.error}>{error}</Text>}
           <Button title="Sign in" onPress={signIn} busy={busy} disabled={!email || !password} />
           <Pressable onPress={() => setShowServer((x) => !x)}>
-            <Text style={[ui.muted, { color: colors.accent }]}>Server</Text>
+            <Text style={[ui.muted, { color: colors.link }]}>Server</Text>
           </Pressable>
           {showServer && <TextInput style={ui.input} value={url} onChangeText={setUrl} autoCapitalize="none" placeholderTextColor={colors.muted} />}
         </View>

@@ -588,7 +588,7 @@ function TenderSheet(props: {
 
   return (
     <Modal transparent animationType="fade" onRequestClose={props.onCancel}>
-      <View style={{ flex: 1, backgroundColor: "#000b", justifyContent: "center", alignItems: "center" }}>
+      <View style={{ flex: 1, backgroundColor: colors.overlay, justifyContent: "center", alignItems: "center" }}>
         <ScrollView style={[ui.panel, { width: dialog(560), maxHeight: "90%", flexGrow: 0 }]} contentContainerStyle={{ gap: 12 }}>
           {receipt ? (
             <>
@@ -702,7 +702,7 @@ function TenderSheet(props: {
                 </>
               )}
               {waitingOnCard && (
-                <Text style={[ui.h2, { color: colors.accent, textAlign: "center" }]}>
+                <Text style={[ui.h2, { color: colors.link, textAlign: "center" }]}>
                   Tap, insert, or swipe on {terminal?.name ?? "the terminal"}
                 </Text>
               )}

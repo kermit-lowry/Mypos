@@ -42,7 +42,7 @@ export function TerminalPicker(props: { terminals: Terminal[]; selectedId?: stri
   const { dialog } = useLayout();
   return (
     <Modal transparent animationType="fade" onRequestClose={props.onClose}>
-      <View style={{ flex: 1, backgroundColor: "#000b", justifyContent: "center", alignItems: "center" }}>
+      <View style={{ flex: 1, backgroundColor: colors.overlay, justifyContent: "center", alignItems: "center" }}>
         <View style={[ui.panel, { width: dialog(460), gap: 10 }]}>
           <Text style={ui.h1}>Card terminal for this register</Text>
           {props.terminals.length === 0 && (

@@ -18,7 +18,7 @@ export function RewardsPicker(props: { points: number; selected: string[]; onCha
 
   return (
     <Modal transparent animationType="fade" onRequestClose={props.onClose}>
-      <View style={{ flex: 1, backgroundColor: "#000b", justifyContent: "center", alignItems: "center" }}>
+      <View style={{ flex: 1, backgroundColor: colors.overlay, justifyContent: "center", alignItems: "center" }}>
         <View style={[ui.panel, { width: dialog(520), maxHeight: "85%", gap: 12 }]}>
           <Text style={ui.h1}>Redeem rewards</Text>
           <Text style={ui.muted}>{left.toLocaleString()} points available</Text>
