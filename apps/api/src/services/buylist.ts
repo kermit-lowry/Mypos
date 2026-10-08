@@ -19,6 +19,8 @@ const toRule = (p: BuylistPolicy): BuylistPolicyRule => ({
   minResaleCents: p.minResaleCents,
 });
 
+const money = (c: number) => `$${(c / 100).toFixed(2)}`;
+
 export interface SuggestedLine {
   variantId?: string;
   description: string;
@@ -26,7 +28,27 @@ export interface SuggestedLine {
   /** The resale figure used (market, your price, or entered). */
   marketCents: number;
   suggestion: OfferSuggestion;
+  /** The catalog's own resale figure; null for items not in the catalog. */
+  catalogResaleCents: number | null;
+  /**
+   * The offer from the catalog figure alone, ignoring anything typed at the
+   * counter. Offers above this need BUYLIST_OVERRIDE. Same as `suggestion`
+   * for uncatalogued items.
+   */
+  catalogSuggestion: OfferSuggestion;
 }
+
+/** A quote line that went past what the catalog supports (for the activity log). */
+export type OverrideLine = {
+  variantId: string | null;
+  description: string;
+  catalogResaleCents: number | null;
+  enteredResaleCents: number | null;
+  suggestedCashCents: number;
+  cashOfferCents: number;
+  suggestedCreditCents: number;
+  creditOfferCents: number;
+};
 
 /** Suggested offers for what a customer brought in, from the store's trade-in rules. */
 export async function suggestLines(db: Db, locationId: string, lines: Pick<BuylistLineInput, "variantId" | "description" | "quantity" | "marketCents">[]): Promise<SuggestedLine[]> {
@@ -54,52 +76,79 @@ export async function suggestLines(db: Db, locationId: string, lines: Pick<Buyli
     if (l.variantId && !v) throw notFound(`Variant ${l.variantId}`);
     if (!v && !l.description) throw badRequest("DESCRIPTION_REQUIRED", "Items not in the catalog need a description");
     if (!v && l.marketCents == null) throw badRequest("RESALE_REQUIRED", `Enter what "${l.description}" resells for`);
-    const suggestion = suggestOffer(
-      {
-        priceCents: v?.priceCents ?? null,
-        marketCents: v?.marketCents ?? null,
-        // A figure typed at the counter overrides the catalog's for this ticket.
-        enteredCents: l.marketCents ?? null,
-        trendBps: v ? (trends.get(v.id)?.changeBps ?? null) : null,
-        onHand: v ? (levels.find((x) => x.variantId === v.id)?.onHand ?? 0) : 0,
-      },
-      ruleFor(v?.product.kind ?? null, v?.product.categoryId ?? null),
-    );
+    const rule = ruleFor(v?.product.kind ?? null, v?.product.categoryId ?? null);
+    const catalog = {
+      priceCents: v?.priceCents ?? null,
+      marketCents: v?.marketCents ?? null,
+      trendBps: v ? (trends.get(v.id)?.changeBps ?? null) : null,
+      onHand: v ? (levels.find((x) => x.variantId === v.id)?.onHand ?? 0) : 0,
+    };
+    // A figure typed at the counter overrides the catalog's for this ticket...
+    const suggestion = suggestOffer({ ...catalog, enteredCents: l.marketCents ?? null }, rule);
+    // ...but the catalog's own figure is what offers are checked against, so
+    // typing a bigger "Resells $" can't raise the offer without BUYLIST_OVERRIDE.
+    const catalogSuggestion = v && (v.priceCents != null || v.marketCents != null) ? suggestOffer({ ...catalog, enteredCents: null }, rule) : suggestion;
     return {
       variantId: v?.id,
       description: v ? describeVariant(v.product.title, v) : l.description!,
       quantity: l.quantity,
       marketCents: suggestion.resaleCents,
       suggestion,
+      catalogResaleCents: v ? catalogSuggestion.resaleCents : null,
+      catalogSuggestion,
     };
   });
 }
 
 /**
  * Build a quote. Offers default to the suggestion; an employee may change
- * them, but going above the suggestion needs BUYLIST_OVERRIDE (checked by
- * `authorizeOverride`). Nothing moves until the customer accepts.
+ * them, but going above what the catalog figure supports (a bigger offer, or
+ * a bigger "Resells $") needs BUYLIST_OVERRIDE (checked by `authorizeOverride`).
+ * Returns the lines that needed it so the route can log them with the
+ * approver. Nothing moves until the customer accepts.
  */
 export async function quoteBuylist(ctx: Ctx, input: BuylistQuoteInput, authorizeOverride: () => Promise<void> = async () => undefined) {
   const { prisma, actor } = ctx;
   const suggested = await suggestLines(prisma, input.locationId, input.lines);
+  const overrides: OverrideLine[] = [];
   const lines = suggested.map((s, i) => {
     const l = input.lines[i]!;
-    return {
+    const entered = l.marketCents ?? null;
+    const line = {
       variantId: s.variantId,
       description: s.description,
       quantity: s.quantity,
       marketCents: s.marketCents,
       cashOfferCents: l.cashOfferCents ?? s.suggestion.cashCents,
       creditOfferCents: l.creditOfferCents ?? s.suggestion.creditCents,
-      suggestedCashCents: s.suggestion.cashCents,
-      suggestedCreditCents: s.suggestion.creditCents,
-      offerNotes: s.suggestion.notes,
+      suggestedCashCents: s.catalogSuggestion.cashCents,
+      suggestedCreditCents: s.catalogSuggestion.creditCents,
+      offerNotes:
+        s.catalogResaleCents != null && entered != null && entered !== s.catalogResaleCents
+          ? [...s.suggestion.notes, `Resale entered ${money(entered)} (catalog ${money(s.catalogResaleCents)})`]
+          : s.suggestion.notes,
     };
+    const over =
+      line.cashOfferCents > line.suggestedCashCents ||
+      line.creditOfferCents > line.suggestedCreditCents ||
+      (s.catalogResaleCents != null && (entered ?? 0) > s.catalogResaleCents);
+    if (over) {
+      overrides.push({
+        variantId: s.variantId ?? null,
+        description: s.description,
+        catalogResaleCents: s.catalogResaleCents,
+        enteredResaleCents: entered,
+        suggestedCashCents: line.suggestedCashCents,
+        cashOfferCents: line.cashOfferCents,
+        suggestedCreditCents: line.suggestedCreditCents,
+        creditOfferCents: line.creditOfferCents,
+      });
+    }
+    return line;
   });
-  if (lines.some((l) => l.cashOfferCents > l.suggestedCashCents || l.creditOfferCents > l.suggestedCreditCents)) await authorizeOverride();
+  if (overrides.length) await authorizeOverride();
 
-  return prisma.buylistTicket.create({
+  const ticket = await prisma.buylistTicket.create({
     data: {
       locationId: input.locationId,
       customerId: input.customerId,
@@ -110,6 +159,7 @@ export async function quoteBuylist(ctx: Ctx, input: BuylistQuoteInput, authorize
     },
     include: { lines: true },
   });
+  return { ticket, overrides };
 }
 
 /** Replace the store's trade-in rules. */

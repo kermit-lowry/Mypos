@@ -22,6 +22,9 @@ describe("program settings", () => {
     const res = await w.as(w.manager, "PUT", "/loyalty/program", { enabled: true, type: "POINTS", pointsPerDollar: 1 });
     expect(res.status).toBe(403);
     expect((await program({ type: "POINTS", pointsPerDollar: 1 })).status).toBe(200);
+    const log = await w.as(w.manager, "GET", "/audit?action=LOYALTY_PROGRAM_UPDATED");
+    expect(log.body).toHaveLength(1);
+    expect(log.body[0]).toMatchObject({ staffName: "OWNER", details: { before: { enabled: false, type: "POINTS", pointsPerDollar: 1 }, after: { enabled: true, type: "POINTS", pointsPerDollar: 1 } } });
   });
 
   it("rejects an enabled program with no earn rate", async () => {
@@ -46,6 +49,8 @@ describe("cashback (percentage of every dollar)", () => {
 
   it("spends rewards dollars as a tender, without earning on that part", async () => {
     await w.as(w.manager, "POST", `/customers/${cust}/loyalty`, { unit: "CENTS", amount: 500, reason: "Welcome bonus" });
+    const log = await w.as(w.manager, "GET", "/audit?action=BALANCE_ADJUSTED");
+    expect(log.body[0]).toMatchObject({ staffName: "MANAGER", details: { customerId: cust, kind: "CASHBACK", amount: 500, reason: "Welcome bonus", balanceAfter: 500 } });
     // $10.83 total, $5 paid with rewards: earns 5% on the cash-paid share of $10 ≈ $0.27
     const res = await sell([{ variantId: v.nm, quantity: 1 }], [{ type: "LOYALTY", amountCents: 500 }, { type: "CASH", amountCents: 583 }]);
     expect(res.status).toBe(201);
@@ -155,6 +160,18 @@ describe("points", () => {
     expect((await w.as(w.cashier, "GET", "/loyalty/rewards")).body).toHaveLength(0);
     const res = await sell([{ variantId: v.nm, quantity: 1 }], [{ type: "CASH", amountCents: 975 }], { rewardIds: [r] });
     expect(res.body.error).toBe("REWARD_UNAVAILABLE");
+  });
+
+  it("logs balance adjustments and reward changes", async () => {
+    const adjusted = await w.as(w.manager, "GET", "/audit?action=BALANCE_ADJUSTED");
+    expect(adjusted.body[0]).toMatchObject({ staffName: "MANAGER", details: { customerId: cust, kind: "POINTS", amount: 1000, reason: "Starting balance", balanceAfter: 1000 } });
+
+    const r = await reward({ name: "Old promo", type: "AMOUNT_OFF", pointsCost: 100, amountCents: 100 });
+    expect((await w.as(w.manager, "GET", "/audit?action=LOYALTY_REWARD_CREATED")).body[0]).toMatchObject({ staffName: "OWNER", details: { rewardId: r, name: "Old promo", pointsCost: 100, type: "AMOUNT_OFF" } });
+    // Fields sent unchanged aren't reported as changes.
+    await w.as(w.owner, "PATCH", `/loyalty/rewards/${r}`, { active: false, pointsCost: 100 });
+    expect((await w.as(w.manager, "GET", "/audit?action=LOYALTY_REWARD_UPDATED")).body[0].details).toEqual({ rewardId: r, name: "Old promo", changes: { active: { from: true, to: false } } });
+    expect((await w.as(w.owner, "PATCH", "/loyalty/rewards/nope", { active: false })).status).toBe(404);
   });
 
   it("gives redeemed points back only on a full refund", async () => {

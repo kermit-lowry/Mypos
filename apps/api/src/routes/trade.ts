@@ -39,9 +39,20 @@ export function tradeRoutes(app: FastifyInstance, base: Ctx, cardSources: CardSo
     const input = parse(BuylistQuoteInput.pick({ locationId: true, lines: true }), req.body);
     return suggestLines(prisma, input.locationId, input.lines);
   });
-  app.post("/buylist/quote", staff, async (req, reply) =>
-    reply.code(201).send(await quoteBuylist(ctx(req), parse(BuylistQuoteInput, req.body), () => authorize(req, "BUYLIST_OVERRIDE", "buylist offer above suggestion"))),
-  );
+  app.post("/buylist/quote", staff, async (req, reply) => {
+    const input = parse(BuylistQuoteInput, req.body);
+    const { ticket, overrides } = await quoteBuylist(ctx(req), input, () => authorize(req, "BUYLIST_OVERRIDE", "buylist offer above suggestion"));
+    if (overrides.length) {
+      await audit(prisma, {
+        action: "BUYLIST_OVERRIDE",
+        staffId: req.user.sub,
+        approverId: req.approverId,
+        locationId: input.locationId,
+        details: { ticketId: ticket.id, number: ticket.number, lines: overrides },
+      });
+    }
+    return reply.code(201).send(ticket);
+  });
   // Paying out cash/credit is a manager action at most stores.
   // Paying cash and issuing store credit are separate permissions.
   app.post("/buylist/:id/accept", staff, async (req) => {
@@ -114,9 +125,13 @@ export function tradeRoutes(app: FastifyInstance, base: Ctx, cardSources: CardSo
 
   // ── Trade-in offer rules (owner) ───────────────────────────
   app.get("/buylist/policies", staff, async () => prisma.buylistPolicy.findMany({ orderBy: [{ kind: "asc" }, { categoryId: "asc" }] }));
-  app.put("/buylist/policies", { preHandler: requirePermission("MANAGE_BUYLIST") }, async (req) =>
-    savePolicies(prisma, parse(z.array(BuylistPolicyInput).max(200), req.body)),
-  );
+  app.put("/buylist/policies", { preHandler: requirePermission("MANAGE_BUYLIST") }, async (req) => {
+    const input = parse(z.array(BuylistPolicyInput).max(200), req.body);
+    const before = (await prisma.buylistPolicy.findMany({ orderBy: [{ kind: "asc" }, { categoryId: "asc" }] })).map(({ id, updatedAt, ...rule }) => rule);
+    const saved = await savePolicies(prisma, input);
+    await audit(prisma, { action: "BUYLIST_POLICY_UPDATED", staffId: req.user.sub, details: { before, after: input } });
+    return saved;
+  });
   app.post("/buylist/:id/reject", staff, async (req) => {
     await rejectBuylist(ctx(req), id(req));
     return { ok: true };
@@ -128,7 +143,11 @@ export function tradeRoutes(app: FastifyInstance, base: Ctx, cardSources: CardSo
   app.post("/consignment", { preHandler: requirePermission("MANAGE_CONSIGNMENT") }, async (req) => consignment.consignItem(ctx(req), parse(ConsignInput, req.body)));
   app.post("/consignment/:id/return", { preHandler: requirePermission("MANAGE_CONSIGNMENT") }, async (req) => consignment.returnConsignment(ctx(req), id(req)));
   app.get("/consignors/:id/statement", { preHandler: requirePermission("MANAGE_CONSIGNMENT") }, async (req) => consignment.consignorStatement(ctx(req), id(req)));
-  app.post("/consignors/:id/settle", { preHandler: requirePermission("CONSIGNOR_SETTLE") }, async (req) => consignment.settleConsignor(ctx(req), id(req)));
+  app.post("/consignors/:id/settle", { preHandler: requirePermission("CONSIGNOR_SETTLE") }, async (req) => {
+    const r = await consignment.settleConsignor(ctx(req), id(req));
+    await audit(prisma, { action: "CONSIGNOR_SETTLED", staffId: req.user.sub, approverId: req.approverId, details: { consignorId: id(req), paidCents: r.paidCents } });
+    return r;
+  });
   app.post("/authentications", staff, async (req) => consignment.recordAuthentication(ctx(req), parse(AuthenticationInput, req.body)));
 
   // ── Events ─────────────────────────────────────────────────
@@ -147,7 +166,12 @@ export function tradeRoutes(app: FastifyInstance, base: Ctx, cardSources: CardSo
   // ── Preorders ──────────────────────────────────────────────
   app.post("/preorder-products", { preHandler: requirePermission("MANAGE_CATALOG") }, async (req) => preorders.createPreorderProduct(ctx(req), parse(PreorderProductInput, req.body)));
   app.get("/preorder-products/:id", staff, async (req) => preorders.preorderAvailability(ctx(req), id(req)));
-  app.post("/preorders", staff, async (req, reply) => reply.code(201).send(await preorders.placePreorder(ctx(req), parse(PreorderInput, req.body))));
+  app.post("/preorders", staff, async (req, reply) => {
+    const input = parse(PreorderInput, req.body);
+    // Same gate as paying for a sale with store credit.
+    if (input.tenders.some((t) => t.type === "STORE_CREDIT")) await authorize(req, "TENDER_STORE_CREDIT", "preorder deposit");
+    return reply.code(201).send(await preorders.placePreorder(ctx(req), input));
+  });
   app.post("/preorders/:id/fulfill", staff, async (req) =>
     preorders.fulfillPreorder(
       ctx(req),
@@ -160,6 +184,22 @@ export function tradeRoutes(app: FastifyInstance, base: Ctx, cardSources: CardSo
       z.object({ toStoreCredit: z.boolean().default(false), terminalId: z.string().optional() }),
       req.body ?? {},
     );
-    return preorders.cancelPreorder(ctx(req), id(req), toStoreCredit, terminalId);
+    const pre = await preorders.cancelPreorder(ctx(req), id(req), toStoreCredit, terminalId);
+    // The refund legs are the negative payments written by the cancel.
+    const refunds = pre.payments.filter((p) => p.amountCents < 0);
+    await audit(prisma, {
+      action: "PREORDER_CANCELLED",
+      staffId: req.user.sub,
+      approverId: req.approverId,
+      locationId: pre.locationId,
+      details: {
+        preorderId: pre.id,
+        customerId: pre.customerId,
+        refundCents: refunds.reduce((a, p) => a - p.amountCents, 0),
+        tenders: refunds.map((p) => ({ tender: p.tender, amountCents: -p.amountCents, status: p.status })),
+        toStoreCredit,
+      },
+    });
+    return pre;
   });
 }

@@ -46,6 +46,30 @@ describe("brands", () => {
     const brands = await w.as(w.cashier, "GET", "/catalog/brands");
     expect(brands.body.map((b: any) => [b.name, b.products])).toEqual([["Jordan", 1], ["nike", 2]]);
     expect((await w.as(w.cashier, "GET", "/catalog/brands?q=jor")).body).toHaveLength(1);
+
+    const created = await w.as(w.manager, "GET", "/audit?action=PRODUCT_CREATED");
+    expect(created.body.map((e: any) => [e.details.title, e.details.kind, e.details.brand, e.details.variants])).toEqual([
+      ["Nike Tech Fleece", "APPAREL", "nike", 1],
+      ["Nike Dunk Low Panda", "SNEAKER", "nike", 2],
+      ["Jordan 1 Retro High OG Chicago", "SNEAKER", "Jordan", 1],
+      ["Charizard ex", "TCG_SINGLE", null, 2],
+    ]);
+    expect(created.body[0]).toMatchObject({ staffName: "MANAGER", details: { productId: again.body.id } });
+  });
+
+  it("logs item edits: price changes and other field changes as separate events", async () => {
+    await w.as(w.manager, "PATCH", `/catalog/variants/${v.nm}`, { priceCents: 1299 });
+    await w.as(w.manager, "PATCH", `/catalog/variants/${v.nm}`, { costCents: 450, autoPrice: true, barcode: "0123456789", imageUrl: null });
+    const prices = await w.as(w.manager, "GET", "/audit?action=PRICE_CHANGE");
+    expect(prices.body).toHaveLength(1);
+    expect(prices.body[0].details).toMatchObject({ variantId: v.nm, sku: "PKM-OBF-125-NM", fromCents: 1000, toCents: 1299 });
+    const edits = await w.as(w.manager, "GET", "/audit?action=VARIANT_UPDATED");
+    expect(edits.body).toHaveLength(1);
+    expect(edits.body[0]).toMatchObject({
+      staffName: "MANAGER",
+      details: { variantId: v.nm, sku: "PKM-OBF-125-NM", item: "Charizard ex", changes: { costCents: { from: null, to: 450 }, autoPrice: { from: false, to: true }, barcode: { from: null, to: "0123456789" } } },
+    });
+    expect(edits.body[0].details.changes.imageUrl).toBeUndefined();
   });
 
   it("renames a brand on every product, merges brands, and sets brand by id or name", async () => {
@@ -56,6 +80,7 @@ describe("brands", () => {
 
     const dup = await w.as(w.manager, "POST", "/catalog/brands", { name: "Nike SB" });
     expect(dup.status).toBe(201);
+    expect((await w.as(w.manager, "GET", "/audit?action=BRAND_CREATED")).body[0]).toMatchObject({ staffName: "MANAGER", details: { brandId: dup.body.id, name: "Nike SB" } });
     expect((await w.as(w.manager, "POST", "/catalog/brands", { name: "nike" })).body.error).toBe("BRAND_EXISTS");
     expect((await w.as(w.manager, "PATCH", `/catalog/brands/${dup.body.id}`, { name: "NIKE" })).body.error).toBe("BRAND_EXISTS");
 
@@ -64,6 +89,10 @@ describe("brands", () => {
     expect((await w.as(w.manager, "PATCH", `/catalog/products/${shoe.productId}`, { brandId: dup.body.id })).body).toMatchObject({ brand: "Nike SB", brandId: dup.body.id });
     expect((await w.as(w.manager, "PATCH", `/catalog/products/${shoe.productId}`, { brand: "Jordan" })).body.brand).toBe("Jordan");
     expect((await w.as(w.manager, "PATCH", `/catalog/products/${shoe.productId}`, { brand: null })).body.brandId).toBeNull();
+    const edits = await w.as(w.manager, "GET", "/audit?action=PRODUCT_UPDATED");
+    expect(edits.body[0]).toMatchObject({ staffName: "MANAGER", details: { productId: shoe.productId, title: "Jordan 1 Retro High OG Chicago" } });
+    expect(edits.body.map((e: any) => e.details.changes.brand)).toEqual([{ from: "Jordan", to: null }, { from: "Nike SB", to: "Jordan" }, { from: "Jordan", to: "Nike SB" }]);
+    expect((await w.as(w.manager, "PATCH", "/catalog/products/nope", { title: "x" })).status).toBe(404);
 
     const merged = await w.as(w.manager, "POST", `/catalog/brands/${dup.body.id}/merge`, { intoId: nike.brandId });
     expect(merged.body).toMatchObject({ moved: 0, into: { name: "Nike" } });

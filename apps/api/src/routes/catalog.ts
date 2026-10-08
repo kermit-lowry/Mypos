@@ -10,8 +10,9 @@ import { marketTrends, withMarket } from "../pricing/trends.js";
 import { brandData, mergeBrands, renameBrand } from "../services/brands.js";
 import type { Ctx } from "../services/context.js";
 import { moveInventory } from "../services/inventory.js";
-import { audit } from "../services/permissions.js";
+import { audit, changes } from "../services/permissions.js";
 
+/** Fields a PATCH actually changed, as { field: { from, to } }, for the activity log. */
 export function catalogRoutes(app: FastifyInstance, base: Ctx) {
   const { prisma } = base;
   const staff = { preHandler: requireRole("CASHIER") };
@@ -150,7 +151,9 @@ export function catalogRoutes(app: FastifyInstance, base: Ctx) {
     const body = parse(BrandBody, req.body);
     const existing = await prisma.brand.findFirst({ where: { name: { equals: body.name.trim(), mode: "insensitive" } } });
     if (existing) throw conflict("BRAND_EXISTS", `${existing.name} already exists`);
-    return reply.code(201).send(await prisma.brand.create({ data: { name: body.name.trim(), active: body.active ?? true } }));
+    const brand = await prisma.brand.create({ data: { name: body.name.trim(), active: body.active ?? true } });
+    await audit(prisma, { action: "BRAND_CREATED", staffId: req.user.sub, details: { brandId: brand.id, name: brand.name } });
+    return reply.code(201).send(brand);
   });
   app.patch("/catalog/brands/:id", { preHandler: requirePermission("MANAGE_CATALOG") }, async (req) => {
     const { id } = req.params as { id: string };
@@ -269,10 +272,16 @@ export function catalogRoutes(app: FastifyInstance, base: Ctx) {
       const known = await prisma.vendor.findMany({ where: { id: { in: vendorLinks.map((v) => v.vendorId) } }, select: { id: true } });
       if (known.length !== new Set(vendorLinks.map((v) => v.vendorId)).size) throw notFound("Vendor");
     }
-    return prisma.product.create({
+    const created = await prisma.product.create({
       data: { ...product, variants: { create: normalized }, ...(vendorLinks?.length ? { vendors: { create: vendorLinks } } : {}) },
       include: { variants: true, vendors: { include: { vendor: true } } },
     });
+    await audit(prisma, {
+      action: "PRODUCT_CREATED",
+      staffId: req.user.sub,
+      details: { productId: created.id, title: created.title, kind: created.kind, brand: created.brand, variants: created.variants.length },
+    });
+    return created;
   });
 
   app.get("/catalog/products/:id", staff, async (req) => {
@@ -305,7 +314,12 @@ export function catalogRoutes(app: FastifyInstance, base: Ctx) {
       }),
       req.body,
     );
-    return prisma.product.update({ where: { id }, data: { ...data, ...(await brandData(prisma, { brand, brandId })) }, include: { vendors: { include: { vendor: true } } } });
+    const before = await prisma.product.findUnique({ where: { id } });
+    if (!before) throw notFound("Product");
+    const update = { ...data, ...(await brandData(prisma, { brand, brandId })) };
+    const updated = await prisma.product.update({ where: { id }, data: update, include: { vendors: { include: { vendor: true } } } });
+    await audit(prisma, { action: "PRODUCT_UPDATED", staffId: req.user.sub, details: { productId: id, title: updated.title, changes: changes(before, update) } });
+    return updated;
   });
 
   app.patch("/catalog/variants/:id", { preHandler: requirePermission("MANAGE_CATALOG") }, async (req) => {
@@ -328,6 +342,12 @@ export function catalogRoutes(app: FastifyInstance, base: Ctx) {
         staffId: req.user.sub,
         details: { variantId: id, sku: before.sku, item: before.product.title, fromCents: before.priceCents, toCents: data.priceCents },
       });
+    }
+    // Everything but the price (which has its own event above).
+    const { priceCents, ...rest } = data;
+    const changed = changes(before, rest);
+    if (Object.keys(changed).length) {
+      await audit(prisma, { action: "VARIANT_UPDATED", staffId: req.user.sub, details: { variantId: id, sku: before.sku, item: before.product.title, changes: changed } });
     }
     return updated;
   });
@@ -370,6 +390,6 @@ export function catalogRoutes(app: FastifyInstance, base: Ctx) {
 
   app.post("/pricing/reprice", { preHandler: requirePermission("MANAGE_CATALOG") }, async (req) => {
     const { productIds } = parse(z.object({ productIds: z.array(z.string()).optional() }), req.body ?? {});
-    return repriceSingles(prisma, defaultProviders, undefined, { productIds });
+    return repriceSingles(prisma, defaultProviders, undefined, { productIds, actorId: req.user.sub, trigger: "manual" });
   });
 }

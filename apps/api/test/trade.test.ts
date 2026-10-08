@@ -113,6 +113,8 @@ describe("consignment", () => {
     expect((await w.as(w.manager, "POST", `/consignors/${consignor.body.id}/settle`)).status).toBe(403);
     const settled = await w.as(w.owner, "POST", `/consignors/${consignor.body.id}/settle`);
     expect(settled.body.paidCents).toBe(25500);
+    const log = await w.as(w.manager, "GET", "/audit?action=CONSIGNOR_SETTLED");
+    expect(log.body[0]).toMatchObject({ staffName: "OWNER", details: { consignorId: consignor.body.id, paidCents: 25500 } });
   });
 });
 
@@ -250,5 +252,31 @@ describe("preorders", () => {
     expect(cancel.body.status).toBe("CANCELLED");
     expect((await w.as(w.cashier, "GET", `/customers/${cust}`)).body.storeCreditCents).toBe(2000);
     expect((await w.as(w.cashier, "GET", `/preorder-products/${ppId}`)).body.remaining).toBe(5);
+    const log = await w.as(w.manager, "GET", "/audit?action=PREORDER_CANCELLED");
+    expect(log.body[0]).toMatchObject({
+      staffName: "MANAGER",
+      locationId: w.locationId,
+      details: { preorderId: pre.body.id, customerId: cust, refundCents: 2000, toStoreCredit: true, tenders: [{ tender: "STORE_CREDIT", amountCents: 2000, status: "APPROVED" }] },
+    });
+  });
+
+  it("taking store credit for a deposit follows the register's store-credit permission", async () => {
+    const { ppId } = await preorderProduct(5);
+    const cust = await customer();
+    await w.as(w.manager, "POST", `/customers/${cust}/credit`, { amountCents: 5000, reason: "Trade-in" });
+    const body = () => ({ preorderProductId: ppId, customerId: cust, quantity: 1, locationId: w.locationId, tenders: [{ type: "STORE_CREDIT", amountCents: 1000 }], idempotencyKey: key() });
+
+    await w.as(w.owner, "PUT", "/roles/CASHIER", { permissions: { TENDER_STORE_CREDIT: "DENY" }, discountMaxBps: 1000 });
+    expect((await w.as(w.cashier, "POST", "/preorders", body())).body).toMatchObject({ error: "PERMISSION_DENIED", details: { permission: "TENDER_STORE_CREDIT" } });
+    expect((await w.as(w.cashier, "GET", `/customers/${cust}`)).body.storeCreditCents).toBe(5000);
+
+    await w.as(w.owner, "PUT", "/roles/CASHIER", { permissions: { TENDER_STORE_CREDIT: "PIN" }, discountMaxBps: 1000 });
+    expect((await w.as(w.cashier, "POST", "/preorders", body())).body.error).toBe("APPROVAL_REQUIRED");
+    expect((await w.as(w.cashier, "GET", `/preorder-products/${ppId}`)).body.remaining).toBe(5);
+    // Cash deposits aren't gated by it.
+    expect((await w.as(w.cashier, "POST", "/preorders", { ...body(), tenders: [{ type: "CASH", amountCents: 1000 }] })).status).toBe(201);
+
+    expect((await w.as(w.manager, "POST", "/preorders", body())).status).toBe(201);
+    expect((await w.as(w.cashier, "GET", `/customers/${cust}`)).body.storeCreditCents).toBe(4000);
   });
 });

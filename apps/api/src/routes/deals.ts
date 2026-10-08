@@ -1,18 +1,27 @@
 import { DiscountPresetInput, DiscountReasonInput, PromotionInput } from "@mypos/shared";
+import type { Prisma } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { parse, requirePermission, requireRole } from "../http.js";
-import { audit } from "../services/permissions.js";
+import { audit, changes } from "../services/permissions.js";
 import type { Ctx } from "../services/context.js";
 import { categoryLineage, runningPromotions } from "../services/promotions.js";
 
+/** Fields a PATCH actually changed, as { field: { from, to } }, for the activity log. */
 /** Back office: categories and automated deals. */
 export function dealRoutes(app: FastifyInstance, base: Ctx) {
   const { prisma } = base;
   const staff = { preHandler: requireRole("CASHIER") };
 
   // ── Categories ─────────────────────────────────────────────
+  /** "Pokémon > Sealed > Booster Boxes" for one category. */
+  const pathOf = async (id: string) => {
+    const [lineage, all] = await Promise.all([categoryLineage(prisma), prisma.category.findMany({ select: { id: true, name: true } })]);
+    const names = new Map(all.map((c) => [c.id, c.name]));
+    return (lineage.get(id) ?? [id]).map((x) => names.get(x) ?? "?").reverse().join(" > ");
+  };
+
   app.get("/categories", staff, async () => {
     const [all, counts] = await Promise.all([
       prisma.category.findMany({ orderBy: { name: "asc" } }),
@@ -35,7 +44,9 @@ export function dealRoutes(app: FastifyInstance, base: Ctx) {
     if (parentId && !(await prisma.category.findUnique({ where: { id: parentId } }))) throw notFound("Parent category");
     // NULL parents aren't unique in Postgres, so check top-level names by hand.
     if (await prisma.category.findFirst({ where: { name, parentId: parentId ?? null } })) throw conflict("DUPLICATE", "That category already exists here");
-    return reply.code(201).send(await prisma.category.create({ data: { name, parentId: parentId ?? null } }));
+    const c = await prisma.category.create({ data: { name, parentId: parentId ?? null } });
+    await audit(prisma, { action: "CATEGORY_CREATED", staffId: req.user.sub, details: { categoryId: c.id, name: c.name, path: await pathOf(c.id) } });
+    return reply.code(201).send(c);
   });
 
   app.patch("/categories/:id", { preHandler: requirePermission("MANAGE_DEALS") }, async (req) => {
@@ -46,14 +57,22 @@ export function dealRoutes(app: FastifyInstance, base: Ctx) {
       const lineage = await categoryLineage(prisma);
       if ((lineage.get(data.parentId) ?? []).includes(id)) throw badRequest("CATEGORY_LOOP", "A category can't go inside itself");
     }
-    return prisma.category.update({ where: { id }, data });
+    const before = await prisma.category.findUnique({ where: { id } });
+    if (!before) throw notFound("Category");
+    const c = await prisma.category.update({ where: { id }, data });
+    await audit(prisma, { action: "CATEGORY_UPDATED", staffId: req.user.sub, details: { categoryId: id, name: c.name, path: await pathOf(id), changes: changes(before, data) } });
+    return c;
   });
 
   app.delete("/categories/:id", { preHandler: requirePermission("MANAGE_DEALS") }, async (req) => {
     const { id } = req.params as { id: string };
+    const c = await prisma.category.findUnique({ where: { id } });
+    if (!c) throw notFound("Category");
     const [children, products] = await Promise.all([prisma.category.count({ where: { parentId: id } }), prisma.product.count({ where: { categoryId: id } })]);
     if (children || products) throw conflict("CATEGORY_IN_USE", "Move its products and subcategories first", { children, products });
+    const path = await pathOf(id);
     await prisma.category.delete({ where: { id } });
+    await audit(prisma, { action: "CATEGORY_DELETED", staffId: req.user.sub, details: { categoryId: id, name: c.name, path } });
     return { deleted: true };
   });
 
@@ -81,7 +100,13 @@ export function dealRoutes(app: FastifyInstance, base: Ctx) {
     return (await runningPromotions(prisma, location, channel)).map((p) => ({ id: p.id, name: p.name, type: p.type }));
   });
 
-  app.post("/promotions", { preHandler: requirePermission("MANAGE_DEALS") }, async (req, reply) => reply.code(201).send(await prisma.promotion.create({ data: parse(PromotionInput, req.body) })));
+  const promoSummary = (p: { id: string; name: string; type: string; active: boolean }) => ({ promotionId: p.id, name: p.name, type: p.type, active: p.active });
+
+  app.post("/promotions", { preHandler: requirePermission("MANAGE_DEALS") }, async (req, reply) => {
+    const p = await prisma.promotion.create({ data: parse(PromotionInput, req.body) });
+    await audit(prisma, { action: "PROMOTION_CREATED", staffId: req.user.sub, details: promoSummary(p) });
+    return reply.code(201).send(p);
+  });
 
   app.put("/promotions/:id", { preHandler: requirePermission("MANAGE_DEALS") }, async (req) => {
     const { id } = req.params as { id: string };
@@ -90,18 +115,30 @@ export function dealRoutes(app: FastifyInstance, base: Ctx) {
     const nulls = Object.fromEntries(
       ["description", "percentBps", "amountCents", "priceCents", "buyQty", "getQty", "getDiscountBps", "minQty", "minSubtotalCents", "maxApplications", "startsAt", "endsAt", "startTime", "endTime"].map((k) => [k, null]),
     );
-    return prisma.promotion.update({ where: { id }, data: { ...nulls, ...data } });
+    const before = await prisma.promotion.findUnique({ where: { id } });
+    if (!before) throw notFound("Promotion");
+    const update = { ...nulls, ...data };
+    const p = await prisma.promotion.update({ where: { id }, data: update });
+    await audit(prisma, { action: "PROMOTION_UPDATED", staffId: req.user.sub, details: { ...promoSummary(p), changes: changes(before, update) } });
+    return p;
   });
 
   app.patch("/promotions/:id", { preHandler: requirePermission("MANAGE_DEALS") }, async (req) => {
     const { id } = req.params as { id: string };
     const data = parse(z.object({ active: z.boolean().optional(), priority: z.number().int().min(0).max(10_000).optional() }), req.body);
-    return prisma.promotion.update({ where: { id }, data });
+    const before = await prisma.promotion.findUnique({ where: { id } });
+    if (!before) throw notFound("Promotion");
+    const p = await prisma.promotion.update({ where: { id }, data });
+    await audit(prisma, { action: "PROMOTION_UPDATED", staffId: req.user.sub, details: { ...promoSummary(p), changes: changes(before, data) } });
+    return p;
   });
 
   app.delete("/promotions/:id", { preHandler: requirePermission("MANAGE_DEALS") }, async (req) => {
     const { id } = req.params as { id: string };
+    const p = await prisma.promotion.findUnique({ where: { id } });
+    if (!p) throw notFound("Promotion");
     await prisma.promotion.delete({ where: { id } });
+    await audit(prisma, { action: "PROMOTION_DELETED", staffId: req.user.sub, details: promoSummary(p) });
     return { deleted: true };
   });
 
@@ -110,13 +147,24 @@ export function dealRoutes(app: FastifyInstance, base: Ctx) {
     const { all } = parse(z.object({ all: z.coerce.boolean().default(false) }), req.query);
     return prisma.discountReason.findMany({ where: all ? {} : { active: true }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] });
   });
-  app.post("/discount-reasons", { preHandler: requirePermission("MANAGE_DEALS") }, async (req, reply) =>
-    reply.code(201).send(await prisma.discountReason.create({ data: parse(DiscountReasonInput, req.body) })),
-  );
+  app.post("/discount-reasons", { preHandler: requirePermission("MANAGE_DEALS") }, async (req, reply) => {
+    const r = await prisma.discountReason.create({ data: parse(DiscountReasonInput, req.body) });
+    await audit(prisma, { action: "DISCOUNT_REASON_CREATED", staffId: req.user.sub, details: { reasonId: r.id, name: r.name, active: r.active, requiresNote: r.requiresNote } });
+    return reply.code(201).send(r);
+  });
   app.patch("/discount-reasons/:id", { preHandler: requirePermission("MANAGE_DEALS") }, async (req) => {
     const { id } = req.params as { id: string };
+    const data = parse(DiscountReasonInput.partial(), req.body);
+    const before = await prisma.discountReason.findUnique({ where: { id } });
+    if (!before) throw notFound("Discount reason");
     // Reasons are only turned off, never deleted, so old sales keep their history.
-    return prisma.discountReason.update({ where: { id }, data: parse(DiscountReasonInput.partial(), req.body) });
+    const r = await prisma.discountReason.update({ where: { id }, data });
+    await audit(prisma, {
+      action: "DISCOUNT_REASON_UPDATED",
+      staffId: req.user.sub,
+      details: { reasonId: id, name: r.name, active: r.active, requiresNote: r.requiresNote, changes: changes(before, data) },
+    });
+    return r;
   });
 
   app.get("/discount-presets", staff, async (req) => {
@@ -126,11 +174,21 @@ export function dealRoutes(app: FastifyInstance, base: Ctx) {
   app.post("/discount-presets", { preHandler: requirePermission("MANAGE_DEALS") }, async (req, reply) => {
     const data = parse(DiscountPresetInput, req.body);
     if (data.reasonId && !(await prisma.discountReason.findUnique({ where: { id: data.reasonId } }))) throw notFound("Discount reason");
-    return reply.code(201).send(await prisma.discountPreset.create({ data }));
+    const p = await prisma.discountPreset.create({ data });
+    await audit(prisma, {
+      action: "DISCOUNT_PRESET_CREATED",
+      staffId: req.user.sub,
+      details: { presetId: p.id, label: p.label, kind: p.kind, value: p.value, reasonId: p.reasonId, active: p.active },
+    });
+    return reply.code(201).send(p);
   });
   app.patch("/discount-presets/:id", { preHandler: requirePermission("MANAGE_DEALS") }, async (req) => {
     const { id } = req.params as { id: string };
     const data = parse(z.object({ label: z.string().min(1).max(30).optional(), active: z.boolean().optional(), sortOrder: z.number().int().optional(), reasonId: z.string().nullable().optional() }), req.body);
-    return prisma.discountPreset.update({ where: { id }, data });
+    const before = await prisma.discountPreset.findUnique({ where: { id } });
+    if (!before) throw notFound("Discount preset");
+    const p = await prisma.discountPreset.update({ where: { id }, data });
+    await audit(prisma, { action: "DISCOUNT_PRESET_UPDATED", staffId: req.user.sub, details: { presetId: id, label: p.label, active: p.active, changes: changes(before, data) } });
+    return p;
   });
 }

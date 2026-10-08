@@ -36,6 +36,24 @@ describe("categories", () => {
     expect((await w.as(w.manager, "PATCH", `/categories/${pokemon}`, { parentId: singles })).body.error).toBe("CATEGORY_LOOP");
     expect((await w.app.inject({ method: "DELETE", url: `/categories/${singles}`, headers: { authorization: `Bearer ${w.manager}` } })).statusCode).toBe(409);
   });
+
+  it("logs category changes with their path", async () => {
+    const created = await w.as(w.manager, "GET", "/audit?action=CATEGORY_CREATED");
+    expect(created.body.map((e: any) => e.details.path).sort()).toEqual(["Pokémon", "Pokémon > Singles"]);
+
+    await w.as(w.manager, "PATCH", `/categories/${singles}`, { name: "Single Cards" });
+    const updated = await w.as(w.manager, "GET", "/audit?action=CATEGORY_UPDATED");
+    expect(updated.body[0]).toMatchObject({
+      staffName: "MANAGER",
+      details: { categoryId: singles, name: "Single Cards", path: "Pokémon > Single Cards", changes: { name: { from: "Singles", to: "Single Cards" } } },
+    });
+
+    const sealed = (await w.as(w.manager, "POST", "/categories", { name: "Sealed", parentId: pokemon })).body.id;
+    expect((await w.as(w.manager, "DELETE", `/categories/${sealed}`)).body).toEqual({ deleted: true });
+    const deleted = await w.as(w.manager, "GET", "/audit?action=CATEGORY_DELETED");
+    expect(deleted.body[0].details).toEqual({ categoryId: sealed, name: "Sealed", path: "Pokémon > Sealed" });
+    expect((await w.as(w.manager, "DELETE", `/categories/${sealed}`)).status).toBe(404);
+  });
 });
 
 describe("deal setup", () => {
@@ -46,6 +64,46 @@ describe("deal setup", () => {
     expect(JSON.stringify(bad.body.details)).toContain("Set the % off");
     expect((await deal({ type: "BUY_X_GET_Y", buyQty: 1 })).status).toBe(400);
     expect((await deal({ type: "PERCENT_OFF", percentBps: 1000, targetAll: true, startTime: "17:00" })).status).toBe(400);
+  });
+
+  it("logs deal, discount reason and discount button changes", async () => {
+    const d = await deal({ name: "Weekend 10%", type: "PERCENT_OFF", percentBps: 1000, targetAll: true });
+    const created = await w.as(w.manager, "GET", "/audit?action=PROMOTION_CREATED");
+    expect(created.body[0]).toMatchObject({ staffName: "MANAGER", details: { promotionId: d.body.id, name: "Weekend 10%", type: "PERCENT_OFF", active: true } });
+
+    await w.as(w.manager, "PATCH", `/promotions/${d.body.id}`, { active: false });
+    expect((await w.as(w.manager, "PUT", `/promotions/${d.body.id}`, { name: "Weekend 15%", type: "PERCENT_OFF", percentBps: 1500, targetAll: true, active: false })).status).toBe(200);
+    const updates = await w.as(w.manager, "GET", "/audit?action=PROMOTION_UPDATED");
+    // Only what actually changed, newest first.
+    expect(updates.body.map((e: any) => e.details.changes)).toEqual([
+      { name: { from: "Weekend 10%", to: "Weekend 15%" }, percentBps: { from: 1000, to: 1500 } },
+      { active: { from: true, to: false } },
+    ]);
+
+    expect((await w.as(w.manager, "DELETE", `/promotions/${d.body.id}`)).body).toEqual({ deleted: true });
+    expect((await w.as(w.manager, "GET", "/audit?action=PROMOTION_DELETED")).body[0].details).toEqual({ promotionId: d.body.id, name: "Weekend 15%", type: "PERCENT_OFF", active: false });
+    expect((await w.as(w.manager, "DELETE", `/promotions/${d.body.id}`)).status).toBe(404);
+
+    const reason = await w.as(w.manager, "POST", "/discount-reasons", { name: "Price match", requiresNote: true });
+    await w.as(w.manager, "PATCH", `/discount-reasons/${reason.body.id}`, { active: false });
+    expect((await w.as(w.manager, "GET", "/audit?action=DISCOUNT_REASON_CREATED")).body[0].details).toEqual({ reasonId: reason.body.id, name: "Price match", active: true, requiresNote: true });
+    expect((await w.as(w.manager, "GET", "/audit?action=DISCOUNT_REASON_UPDATED")).body[0].details).toEqual({
+      reasonId: reason.body.id,
+      name: "Price match",
+      active: false,
+      requiresNote: true,
+      changes: { active: { from: true, to: false } },
+    });
+
+    const preset = await w.as(w.manager, "POST", "/discount-presets", { label: "10% off", kind: "PERCENT", value: 1000, reasonId: reason.body.id });
+    await w.as(w.manager, "PATCH", `/discount-presets/${preset.body.id}`, { label: "Ten off", reasonId: null, active: true });
+    expect((await w.as(w.manager, "GET", "/audit?action=DISCOUNT_PRESET_CREATED")).body[0].details).toEqual({ presetId: preset.body.id, label: "10% off", kind: "PERCENT", value: 1000, reasonId: reason.body.id, active: true });
+    expect((await w.as(w.manager, "GET", "/audit?action=DISCOUNT_PRESET_UPDATED")).body[0].details).toEqual({
+      presetId: preset.body.id,
+      label: "Ten off",
+      active: true,
+      changes: { label: { from: "10% off", to: "Ten off" }, reasonId: { from: reason.body.id, to: null } },
+    });
   });
 });
 
@@ -132,7 +190,11 @@ describe("which tenders pay the card price", () => {
   // 1 x $10: cash price $10.83, card price $11.26
 
   it("gift cards, store credit, and checks pay the cash price by default", async () => {
-    await w.as(w.manager, "POST", "/gift-cards", { code: "GIFT-0001", amountCents: 5000 });
+    const card = await w.as(w.manager, "POST", "/gift-cards", { code: "GIFT-0001", amountCents: 5000 });
+    // Issuing is logged with the last 4 of the code only; the full code is what spends it.
+    const issued = await w.as(w.manager, "GET", "/audit?action=GIFT_CARD_ISSUED");
+    expect(issued.body[0]).toMatchObject({ staffName: "MANAGER", details: { giftCardId: card.body.id, last4: "0001", amountCents: 5000 } });
+    expect(JSON.stringify(issued.body.map((e: any) => e.details))).not.toContain("GIFT-0001");
     expect((await sell([{ variantId: v.nm, quantity: 1 }], [{ type: "GIFT_CARD", amountCents: 1083, giftCardCode: "GIFT-0001" }])).status).toBe(201);
     expect((await sell([{ variantId: v.nm, quantity: 1 }], [{ type: "CHECK", amountCents: 1083, reference: "1042" }])).status).toBe(201);
   });

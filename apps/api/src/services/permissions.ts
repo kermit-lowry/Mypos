@@ -147,3 +147,11 @@ export async function audit(
     data: { action: e.action, staffId: e.staffId ?? null, approverId: e.approverId ?? null, locationId: e.locationId ?? null, details: e.details ?? {}, ip: e.ip },
   });
 }
+
+/** Which fields an update changed, as { field: { from, to } }, for audit details. */
+export const changes = (before: Record<string, unknown>, data: Record<string, unknown>): Prisma.InputJsonObject =>
+  Object.fromEntries(
+    Object.entries(data)
+      .filter(([k, v]) => v !== undefined && JSON.stringify(before[k] ?? null) !== JSON.stringify(v))
+      .map(([k, v]) => [k, { from: before[k] ?? null, to: v }]),
+  ) as Prisma.InputJsonObject;

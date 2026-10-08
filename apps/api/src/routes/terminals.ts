@@ -1,10 +1,14 @@
+import type { Prisma } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { notFound } from "../errors.js";
 import { parse, requirePermission, requireRole } from "../http.js";
 import type { TerminalRef } from "../payments/gateway.js";
 import type { Ctx } from "../services/context.js";
+import { audit, changes } from "../services/permissions.js";
 import { reconcilePayment } from "../services/reconcile.js";
 
+/** Fields a PATCH actually changed, as { field: { from, to } }, for the activity log. */
 export function terminalRoutes(app: FastifyInstance, base: Ctx) {
   const { prisma, gateway } = base;
   const staff = { preHandler: requireRole("CASHIER") };
@@ -30,6 +34,7 @@ export function terminalRoutes(app: FastifyInstance, base: Ctx) {
         added++;
       }
     }
+    await audit(prisma, { action: "TERMINAL_SYNCED", staffId: req.user.sub, locationId, details: { count: devices.length, added } });
     return { added, terminals: await prisma.terminal.findMany({ where: { gatewayRef: { in: devices.map((d) => d.ref) } } }) };
   });
 
@@ -44,7 +49,11 @@ export function terminalRoutes(app: FastifyInstance, base: Ctx) {
       }),
       req.body,
     );
-    return prisma.terminal.update({ where: { id }, data });
+    const before = await prisma.terminal.findUnique({ where: { id } });
+    if (!before) throw notFound("Terminal");
+    const t = await prisma.terminal.update({ where: { id }, data });
+    await audit(prisma, { action: "TERMINAL_UPDATED", staffId: req.user.sub, locationId: t.locationId, details: { terminalId: id, name: t.name, changes: changes(before, data) } });
+    return t;
   });
 
   /** Card payments a manager needs to look at: unknown outcomes, failed voids, failed refunds. */
@@ -54,6 +63,22 @@ export function terminalRoutes(app: FastifyInstance, base: Ctx) {
 
   app.post("/payments/:id/resolve", { preHandler: requirePermission("RESOLVE_PAYMENTS") }, async (req) => {
     const { id } = req.params as { id: string };
-    return reconcilePayment(base, id);
+    // Resolving can zero the amount (declined/voided), so read it first.
+    const before = await prisma.payment.findUnique({ where: { id } });
+    const r = await reconcilePayment(base, id);
+    await audit(prisma, {
+      action: "PAYMENT_RESOLVED",
+      staffId: req.user.sub,
+      approverId: req.approverId,
+      details: {
+        paymentId: id,
+        orderId: r.payment.orderId,
+        preorderId: r.payment.preorderId,
+        outcome: r.outcome,
+        amountCents: before?.amountCents ?? r.payment.amountCents,
+        message: r.message ?? null,
+      },
+    });
+    return r;
   });
 }

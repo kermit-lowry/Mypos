@@ -72,6 +72,35 @@ describe("trade-in offers", () => {
     const s = await w.as(w.cashier, "POST", "/buylist/suggest", { locationId: w.locationId, lines: [{ variantId: v.shoe, quantity: 1 }] });
     expect(s.body[0].suggestion).toMatchObject({ cashCents: 21000, creditCents: 25200, basis: "YOUR_PRICE" });
     expect(s.body[0].suggestion.notes[0]).toContain("$300.00");
+    // The register also gets the catalog-only figure, which the override check uses.
+    expect(s.body[0]).toMatchObject({ catalogResaleCents: 30000, catalogSuggestion: { cashCents: 21000, creditCents: 25200 } });
+
+    const log = await w.as(w.manager, "GET", "/audit?action=BUYLIST_POLICY_UPDATED");
+    expect(log.body[0]).toMatchObject({ staffName: "OWNER", details: { before: [], after: [{ kind: null, cashMarginBps: 5000 }, { kind: "SNEAKER", cashMarginBps: 3000 }] } });
+  });
+
+  it("a bigger 'Resells $' typed at the counter can't raise the offer without BUYLIST_OVERRIDE", async () => {
+    // Jordan 1 is $300 in the catalog (50% -> $150 cash, $195 credit); the cashier types $2,000.
+    const body = { locationId: w.locationId, lines: [{ variantId: v.shoe, quantity: 1, marketCents: 200_000 }] };
+    expect((await w.as(w.cashier, "POST", "/buylist/quote", body)).body).toMatchObject({ error: "APPROVAL_REQUIRED", details: { permission: "BUYLIST_OVERRIDE" } });
+    // A lower figure is conservative and needs nothing.
+    expect((await w.as(w.cashier, "POST", "/buylist/quote", { ...body, lines: [{ variantId: v.shoe, quantity: 1, marketCents: 20000 }] })).status).toBe(201);
+
+    const quote = await w.as(w.manager, "POST", "/buylist/quote", body);
+    expect(quote.status).toBe(201);
+    expect(quote.body.lines[0]).toMatchObject({ cashOfferCents: 100_000, creditOfferCents: 130_000, suggestedCashCents: 15000, suggestedCreditCents: 19500 });
+    expect(quote.body.lines[0].offerNotes).toContain("Resale entered $2000.00 (catalog $300.00)");
+
+    const log = await w.as(w.manager, "GET", "/audit?action=BUYLIST_OVERRIDE");
+    expect(log.body).toHaveLength(1);
+    expect(log.body[0]).toMatchObject({
+      staffName: "MANAGER",
+      locationId: w.locationId,
+      details: {
+        ticketId: quote.body.id,
+        lines: [{ variantId: v.shoe, catalogResaleCents: 30000, enteredResaleCents: 200_000, suggestedCashCents: 15000, cashOfferCents: 100_000, suggestedCreditCents: 19500, creditOfferCents: 130_000 }],
+      },
+    });
   });
 
   it("lowers the offer when the market is falling", async () => {
@@ -107,6 +136,8 @@ describe("trade-in offers", () => {
   it("taking store credit as payment can be restricted", async () => {
     const cust = (await w.as(w.cashier, "POST", "/customers", { name: "Buyer" })).body.id;
     await w.as(w.manager, "POST", `/customers/${cust}/credit`, { amountCents: 5000, reason: "Trade-in" });
+    const adjusted = await w.as(w.manager, "GET", "/audit?action=BALANCE_ADJUSTED");
+    expect(adjusted.body[0]).toMatchObject({ staffName: "MANAGER", details: { customerId: cust, kind: "STORE_CREDIT", amount: 5000, reason: "Trade-in", balanceAfter: 5000 } });
     await w.as(w.owner, "PUT", "/roles/CASHIER", { permissions: { TENDER_STORE_CREDIT: "PIN" }, discountMaxBps: 1000 });
     const body = { locationId: w.locationId, customerId: cust, lines: [{ variantId: v.nm, quantity: 1 }], tenders: [{ type: "STORE_CREDIT", amountCents: 1083 }], idempotencyKey: key() };
     expect((await w.as(w.cashier, "POST", "/orders/checkout", body)).body).toMatchObject({ error: "APPROVAL_REQUIRED", details: { permission: "TENDER_STORE_CREDIT" } });

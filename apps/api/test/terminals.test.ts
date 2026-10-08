@@ -61,6 +61,11 @@ describe("card-present checkout", () => {
     expect(resolved.body.outcome).toBe("VOIDED");
     expect(w.gateway.calls.at(-1)).toMatchObject({ op: "void", ref: "hp_txn_1", amountCents: 1083, terminal: "1850025030" });
     expect((await w.as(w.manager, "GET", "/payments/pending")).body).toHaveLength(0);
+    const log = await w.as(w.manager, "GET", "/audit?action=PAYMENT_RESOLVED");
+    expect(log.body[0]).toMatchObject({
+      staffName: "MANAGER",
+      details: { paymentId: res.body.details.paymentId, orderId: res.body.details.orderId, outcome: "VOIDED", amountCents: 1083 },
+    });
   });
 
   it("a manager resolves it: never charged", async () => {
@@ -121,6 +126,22 @@ describe("terminal sync", () => {
     expect(res.json().added).toBe(1);
     const names = (await prisma.terminal.findMany({ orderBy: { gatewayRef: "asc" } })).map((t) => t.name);
     expect(names).toEqual(["Front counter", "PAXA80 9999"]);
+    const log = await w.as(w.manager, "GET", "/audit?action=TERMINAL_SYNCED");
+    expect(log.body[0]).toMatchObject({ staffName: "MANAGER", locationId: w.locationId, details: { count: 2, added: 1 } });
+  });
+
+  it("logs terminal edits (managers only)", async () => {
+    expect((await w.as(w.cashier, "PATCH", `/terminals/${terminalId}`, { name: "Back counter" })).status).toBe(403);
+    const res = await w.as(w.manager, "PATCH", `/terminals/${terminalId}`, { name: "Back counter", receiptPrinterHost: "10.0.0.5", active: true });
+    expect(res.body).toMatchObject({ name: "Back counter", receiptPrinterHost: "10.0.0.5" });
+    const log = await w.as(w.manager, "GET", "/audit?action=TERMINAL_UPDATED");
+    expect(log.body[0]).toMatchObject({ staffName: "MANAGER", locationId: w.locationId });
+    expect(log.body[0].details).toEqual({
+      terminalId,
+      name: "Back counter",
+      changes: { name: { from: "Front counter", to: "Back counter" }, receiptPrinterHost: { from: null, to: "10.0.0.5" } },
+    });
+    expect((await w.as(w.manager, "PATCH", "/terminals/nope", { name: "x" })).status).toBe(404);
   });
 });
 

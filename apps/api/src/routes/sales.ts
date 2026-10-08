@@ -123,13 +123,25 @@ export function salesRoutes(app: FastifyInstance, base: Ctx) {
   app.post("/customers/:id/credit", { preHandler: requirePermission("ADJUST_BALANCES") }, async (req) => {
     const { id } = req.params as { id: string };
     const { amountCents, reason } = parse(z.object({ amountCents: z.number().int(), reason: z.string().min(1) }), req.body);
-    const balance = await prisma.$transaction((tx) => postCredit(tx, { customerId: id, amountCents, reason }));
+    const balance = await prisma.$transaction(async (tx) => {
+      const balanceAfter = await postCredit(tx, { customerId: id, amountCents, reason });
+      await audit(tx, {
+        action: "BALANCE_ADJUSTED",
+        staffId: req.user.sub,
+        approverId: req.approverId,
+        details: { customerId: id, kind: "STORE_CREDIT", amount: amountCents, reason, balanceAfter },
+      });
+      return balanceAfter;
+    });
     return { storeCreditCents: balance };
   });
 
   app.post("/gift-cards", { preHandler: requirePermission("GIFT_CARD_ISSUE") }, async (req) => {
     const { code, amountCents } = parse(z.object({ code: z.string().min(6), amountCents: z.number().int().positive() }), req.body);
-    return prisma.giftCard.create({ data: { code, balanceCents: amountCents } });
+    const card = await prisma.giftCard.create({ data: { code, balanceCents: amountCents } });
+    // Only the last 4 of the code: the activity log is readable by anyone with VIEW_REPORTS.
+    await audit(prisma, { action: "GIFT_CARD_ISSUED", staffId: req.user.sub, approverId: req.approverId, details: { giftCardId: card.id, last4: code.slice(-4), amountCents } });
+    return card;
   });
 
   app.get("/gift-cards/:code", staff, async (req) => {

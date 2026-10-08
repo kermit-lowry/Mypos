@@ -63,12 +63,22 @@ describe("graded cards", () => {
   it("raw cards follow the price feed by condition; slabs are left alone", async () => {
     const { nm, lp, psa } = await charizards();
     const feed: PriceProvider = { source: "test", quote: async () => ({ source: "test", byFinish: { HOLO: 50_000 } }) };
-    await repriceSingles(prisma, [feed]);
+    await repriceSingles(prisma, [feed], undefined, { trigger: "scheduled" });
     const after = await prisma.variant.findMany({ where: { id: { in: [nm.id, lp.id, psa.id] } } });
     const by = Object.fromEntries(after.map((v) => [v.sku, v]));
     expect(by["BS-4-NM"]!.marketCents).toBe(50_000);
     expect(by["BS-4-LP"]!.marketCents).toBe(42_500); // LP = 85% of NM
     expect(by["BS-4-PSA10"]).toMatchObject({ marketCents: null, priceCents: 1_500_000 });
+
+    // The shelf prices that moved are one PRICE_CHANGE event for the whole run.
+    const log = await w.as(w.manager, "GET", "/audit?action=PRICE_CHANGE");
+    expect(log.body).toHaveLength(1);
+    expect(log.body[0]).toMatchObject({ staffId: null, details: { source: "reprice", trigger: "scheduled", provider: "test", count: 2 } });
+    expect(log.body[0].details.items).toHaveLength(2);
+    expect(log.body[0].details.items.find((i: any) => i.sku === "BS-4-NM")).toEqual({ variantId: nm.id, sku: "BS-4-NM", item: "Charizard", fromCents: 40000, toCents: by["BS-4-NM"]!.priceCents });
+    // Same feed again: nothing moved, nothing logged.
+    await repriceSingles(prisma, [feed], undefined, { trigger: "manual" });
+    expect((await w.as(w.manager, "GET", "/audit?action=PRICE_CHANGE")).body).toHaveLength(1);
   });
 
   it("show the grade and cert on receipts, labels, and online", async () => {
