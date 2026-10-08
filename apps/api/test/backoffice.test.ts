@@ -189,6 +189,41 @@ describe("reports", () => {
   });
 });
 
+describe("orders", () => {
+  it("lists sales history with search, status and date filters", async () => {
+    const cust = (await w.as(w.cashier, "POST", "/customers", { name: "Misty Waterflower", email: "misty@cerulean.gym" })).body.id;
+    const first = (await sale([{ variantId: v.nm, quantity: 1 }], [{ type: "CASH", amountCents: 1083 }])).body.order;
+    const second = (await sale([{ variantId: v.lp, quantity: 1 }], [{ type: "CASH", amountCents: 920 }], { customerId: cust })).body.order;
+    await w.as(w.manager, "POST", `/orders/${second.id}/refund`, { lines: [{ orderLineId: second.lines[0].id, quantity: 1 }] });
+
+    const all = await w.as(w.manager, "GET", `/orders?locationId=${w.locationId}`);
+    expect(all.body.map((o: any) => o.number)).toEqual([second.number, first.number]);
+    expect(all.body[0]).toMatchObject({ status: "REFUNDED", customer: { id: cust, name: "Misty Waterflower", email: "misty@cerulean.gym" }, staff: { name: "CASHIER" }, location: { name: "Main St" } });
+    expect(all.body[0].payments.map((p: any) => p.amountCents)).toEqual([920, -920]);
+    expect(all.body[1].customer).toBeNull();
+
+    // By number, with or without the "#".
+    expect((await w.as(w.manager, "GET", `/orders?q=%23${first.number}`)).body.map((o: any) => o.id)).toEqual([first.id]);
+    expect((await w.as(w.manager, "GET", `/orders?q=${first.number}`)).body.map((o: any) => o.id)).toEqual([first.id]);
+    // By customer name or email.
+    expect((await w.as(w.manager, "GET", "/orders?q=misty")).body.map((o: any) => o.id)).toEqual([second.id]);
+    expect((await w.as(w.manager, "GET", "/orders?q=CERULEAN")).body.map((o: any) => o.id)).toEqual([second.id]);
+    expect((await w.as(w.manager, "GET", "/orders?q=brock")).body).toEqual([]);
+
+    expect((await w.as(w.manager, "GET", "/orders?status=REFUNDED")).body.map((o: any) => o.id)).toEqual([second.id]);
+    expect((await w.as(w.manager, "GET", "/orders?status=PAID")).body.map((o: any) => o.id)).toEqual([first.id]);
+    expect((await w.as(w.manager, "GET", "/orders?status=BOGUS")).status).toBe(400);
+
+    expect((await w.as(w.manager, "GET", `/orders?${today()}`)).body).toHaveLength(2);
+    expect((await w.as(w.manager, "GET", "/orders?from=2000-01-01&to=2000-02-01")).body).toEqual([]);
+    expect((await w.as(w.manager, "GET", "/orders?take=1000")).status).toBe(400);
+
+    const one = await w.as(w.manager, "GET", `/orders/${second.id}`);
+    expect(one.body).toMatchObject({ number: second.number, staff: { name: "CASHIER" }, location: { name: "Main St" }, customer: { name: "Misty Waterflower" } });
+    expect(one.body.lines[0]).toMatchObject({ refundedQty: 1, imageUrl: null });
+  });
+});
+
 describe("request parsing", () => {
   it("accepts a body-less POST that still declares a JSON content type", async () => {
     const vendor = await w.as(w.manager, "POST", "/vendors", { name: "V" });

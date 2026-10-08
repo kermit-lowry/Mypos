@@ -1,4 +1,5 @@
 import { CheckoutInput, CustomerInput, RefundInput } from "@mypos/shared";
+import { OrderStatus, type Prisma } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { conflict, notFound } from "../errors.js";
@@ -27,19 +28,54 @@ export function salesRoutes(app: FastifyInstance, base: Ctx) {
     return reply.code(result.replayed ? 200 : 201).send(result);
   });
 
+  /** Sales history. `q` is an order number ("#12" or "12") or part of a customer's name/email. */
   app.get("/orders", staff, async (req) => {
-    const { locationId, customerId, take } = parse(
-      z.object({ locationId: z.string().optional(), customerId: z.string().optional(), take: z.coerce.number().int().max(200).default(50) }),
+    const q = parse(
+      z.object({
+        locationId: z.string().optional(),
+        customerId: z.string().optional(),
+        q: z.string().trim().optional(),
+        from: z.coerce.date().optional(),
+        to: z.coerce.date().optional(),
+        status: z.nativeEnum(OrderStatus).optional(),
+        take: z.coerce.number().int().positive().max(500).default(50),
+      }),
       req.query,
     );
-    return prisma.order.findMany({ where: { locationId, customerId }, orderBy: { createdAt: "desc" }, take, include: { lines: true } });
+    const number = q.q && /^#?\d+$/.test(q.q) ? Number(q.q.replace("#", "")) : undefined;
+    const where: Prisma.OrderWhereInput = {
+      locationId: q.locationId,
+      customerId: q.customerId,
+      status: q.status,
+      createdAt: q.from || q.to ? { gte: q.from, lt: q.to } : undefined,
+      ...(number !== undefined
+        ? { number }
+        : q.q
+          ? { customer: { OR: [{ name: { contains: q.q, mode: "insensitive" } }, { email: { contains: q.q, mode: "insensitive" } }] } }
+          : {}),
+    };
+    return prisma.order.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: q.take,
+      include: { lines: true, payments: true, customer: { select: { id: true, name: true, email: true } }, staff: { select: { id: true, name: true } }, location: { select: { name: true } } },
+    });
   });
 
   app.get("/orders/:id", staff, async (req) => {
     const { id } = req.params as { id: string };
-    const o = await prisma.order.findUnique({ where: { id }, include: { lines: true, payments: true, customer: true } });
+    const o = await prisma.order.findUnique({
+      where: { id },
+      include: {
+        lines: { include: { variant: { select: { imageUrl: true, product: { select: { imageUrl: true } } } } } },
+        payments: true,
+        customer: true,
+        staff: { select: { id: true, name: true } },
+        location: { select: { id: true, name: true } },
+      },
+    });
     if (!o) throw notFound("Order");
-    return o;
+    return { ...o, lines: o.lines.map(({ variant, ...l }) => ({ ...l, imageUrl: variant.imageUrl ?? variant.product.imageUrl })) };
   });
 
   app.post("/orders/:id/refund", { preHandler: requirePermission("REFUND") }, async (req) => {
