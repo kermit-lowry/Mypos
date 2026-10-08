@@ -1,275 +1,151 @@
 import { useCallback, useEffect, useState } from "react";
-import { ScrollView, Switch, Text, TextInput, View } from "react-native";
-import { api, ApiError, type Product, type Variant } from "../../api";
+import { ScrollView, Text, View } from "react-native";
+import { api, type Location, type Vendor } from "../../api";
 import { Button } from "../../components/Button";
-import { ProductSearch, variantLabel } from "../../components/ProductSearch";
+import { useLayout } from "../../layout";
 import { useCan, useSession } from "../../session";
-import { colors, ui } from "../../theme";
-import { Card, Chips, day, Field, Input, money, Table } from "../ui";
+import { ui } from "../../theme";
+import { Card, Chips, type Column, day, Input, money, openDocument, Picker, Table } from "../ui";
+import { fromServer, newPo, type Po, type PoStatus, qtyOf, receivedOf, small, StatusBadge, totalOf } from "./purchasing/common";
+import { PoEditor } from "./purchasing/PoEditor";
+import { VendorEditor, VendorList, type VendorPick } from "./purchasing/Vendors";
 
-interface Vendor {
-  id: string;
-  name: string;
-  email: string | null;
-  phone: string | null;
-  active: boolean;
-}
-interface PoLine {
-  variantId: string;
-  title: string;
-  detail: string;
-  quantity: number;
-  receivedQty: number;
-  unitCostCents: number;
-}
-interface Po {
-  id?: string;
-  number?: number;
-  status: "DRAFT" | "ORDERED" | "PARTIAL" | "RECEIVED" | "CANCELLED";
-  vendorId: string;
-  vendor?: Vendor;
-  locationId: string;
-  reference?: string | null;
-  notes?: string | null;
-  expectedAt?: string | null;
-  lines: PoLine[];
-}
-
-const toLines = (po: any): PoLine[] =>
-  (po.lines ?? []).map((l: any) => ({
-    variantId: l.variantId,
-    title: l.variant?.product?.title ?? l.title ?? l.variantId,
-    detail: l.variant ? variantLabel(l.variant) : "",
-    quantity: l.quantity,
-    receivedQty: l.receivedQty ?? 0,
-    unitCostCents: l.unitCostCents,
-  }));
+type StatusFilter = "open" | PoStatus | "all";
+const STATUS_FILTERS: [StatusFilter, string][] = [
+  ["open", "Open"],
+  ["DRAFT", "Draft"],
+  ["ORDERED", "Ordered"],
+  ["PARTIAL", "Partial"],
+  ["RECEIVED", "Received"],
+  ["CANCELLED", "Cancelled"],
+  ["all", "All"],
+];
 
 /** Vendors and purchase orders: build, order, receive. */
-export function Purchasing() {
+export function Purchasing({ view: initialView = "orders" }: { view?: "orders" | "vendors" }) {
   const { location } = useSession();
   const can = useCan();
-  const [view, setView] = useState<"orders" | "vendors">("orders");
-  const [showAll, setShowAll] = useState(false);
-  const [orders, setOrders] = useState<any[]>([]);
+  const { narrow } = useLayout();
+  const [view, setView] = useState<"orders" | "vendors">(initialView);
   const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [locations, setLocations] = useState<Location[]>([]);
+  const [orders, setOrders] = useState<Po[]>([]);
   const [editing, setEditing] = useState<Po | null>(null);
+  const [vendor, setVendor] = useState<VendorPick>(null);
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState<StatusFilter>("open");
+  const [vendorId, setVendorId] = useState("");
+  const [locationId, setLocationId] = useState(location.id);
+  const [error, setError] = useState<string | null>(null);
+  const canManage = can("MANAGE_PURCHASING") !== "DENY";
 
-  const load = useCallback(async () => {
-    setOrders(await api("GET", `/purchase-orders?${showAll ? "" : "open=true"}`));
-    setVendors(await api("GET", "/vendors"));
-  }, [showAll]);
+  // The sidebar has an entry for each view.
+  useEffect(() => setView(initialView), [initialView]);
+
+  const loadVendors = useCallback(async () => setVendors(await api("GET", "/vendors")), []);
   useEffect(() => {
-    load();
-  }, [load]);
+    loadVendors().catch(() => undefined);
+    api<Location[]>("GET", "/locations").then(setLocations).catch(() => undefined);
+  }, [loadVendors]);
+
+  const query = [status === "open" ? "open=true" : status === "all" ? "" : `status=${status}`, vendorId && `vendorId=${vendorId}`, locationId && `locationId=${locationId}`, q.trim() && `q=${encodeURIComponent(q.trim())}`].filter(Boolean).join("&");
+  const loadOrders = useCallback(async () => {
+    try {
+      setOrders((await api<any[]>("GET", `/purchase-orders${query ? `?${query}` : ""}`)).map(fromServer));
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [query]);
+  // Typing in the search box re-queries after a short pause.
+  useEffect(() => {
+    const t = setTimeout(loadOrders, 250);
+    return () => clearTimeout(t);
+  }, [loadOrders]);
+
+  const openPo = (po: Po) => setEditing(po);
+  const startPo = (forVendor: string) => setEditing(newPo(forVendor, locationId || location.id));
+  const print = (po: Po) => openDocument(`/purchase-orders/${po.id}/print`).catch((e) => setError(e instanceof Error ? e.message : String(e)));
 
   if (editing) {
     return (
       <PoEditor
         key={editing.id ?? "new"}
         initial={editing}
-        vendors={vendors.filter((v) => v.active || v.id === editing.vendorId)}
+        vendors={vendors}
+        locations={locations}
         onDone={() => {
           setEditing(null);
-          load();
+          loadOrders();
+          loadVendors().catch(() => undefined);
         }}
       />
     );
   }
-
-  return (
-    <ScrollView contentContainerStyle={{ padding: 12, gap: 12 }}>
-      <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
-        <Chips options={[["orders", "Purchase orders"], ["vendors", "Vendors"]]} value={view} onChange={(v) => setView(v as never)} />
-      </View>
-      {view === "orders" ? (
-        <Card
-          title="Purchase orders"
-          right={
-            <View style={[ui.row, { gap: 8 }]}>
-              <Text style={ui.muted}>All</Text>
-              <Switch value={showAll} onValueChange={setShowAll} />
-              {can("MANAGE_PURCHASING") !== "DENY" && <Button title="+ New" kind="good" onPress={() => setEditing({ status: "DRAFT", vendorId: vendors.find((v) => v.active)?.id ?? "", locationId: location.id, lines: [] })} style={{ minHeight: 36, paddingVertical: 6 }} />}
-            </View>
-          }
-        >
-          <Table
-            rows={orders}
-            keyOf={(o) => o.id}
-            onPress={(o) => setEditing({ ...o, lines: toLines(o) })}
-            columns={[
-              { key: "n", label: "PO #", render: (o) => `#${o.number}`, width: 70 },
-              { key: "v", label: "Vendor", render: (o) => o.vendor?.name ?? "", width: 180 },
-              { key: "s", label: "Status", render: (o) => <Text style={[ui.text, { color: o.status === "RECEIVED" ? colors.good : o.status === "CANCELLED" ? colors.muted : colors.warn }]}>{o.status.toLowerCase()}</Text>, width: 100 },
-              { key: "l", label: "Lines", render: (o) => o.lines.length, width: 60, align: "right" },
-              { key: "t", label: "Total", render: (o) => money(o.lines.reduce((a: number, l: any) => a + l.quantity * l.unitCostCents, 0)), width: 100, align: "right" },
-              { key: "e", label: "Expected", render: (o) => (o.expectedAt ? day(o.expectedAt) : ""), width: 110 },
-            ]}
-            empty={showAll ? "No purchase orders yet." : "No open purchase orders."}
-          />
-        </Card>
-      ) : (
-        <Vendors vendors={vendors} onChanged={load} />
-      )}
-    </ScrollView>
-  );
-}
-
-function PoEditor({ initial, vendors, onDone }: { initial: Po; vendors: Vendor[]; onDone: () => void }) {
-  const { location } = useSession();
-  const can = useCan();
-  const [po, setPo] = useState<Po>(initial);
-  const [adding, setAdding] = useState(false);
-  const [receiving, setReceiving] = useState<Record<string, string> | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
-  const draft = po.status === "DRAFT";
-  const receivable = po.status === "ORDERED" || po.status === "PARTIAL";
-  const total = po.lines.reduce((a, l) => a + l.quantity * l.unitCostCents, 0);
-
-  const run = async (fn: () => Promise<unknown>, done = false) => {
-    setMessage(null);
-    try {
-      await fn();
-      if (done) onDone();
-    } catch (e) {
-      setMessage(e instanceof ApiError ? e.message : String(e));
-    }
-  };
-  const body = () => ({
-    vendorId: po.vendorId,
-    locationId: po.locationId,
-    reference: po.reference || undefined,
-    notes: po.notes || undefined,
-    expectedAt: po.expectedAt || undefined,
-    lines: po.lines.map((l) => ({ variantId: l.variantId, quantity: l.quantity, unitCostCents: l.unitCostCents })),
-  });
-  const save = async (): Promise<string> => {
-    if (po.id) {
-      await api("PUT", `/purchase-orders/${po.id}`, draft ? body() : { notes: po.notes || undefined, expectedAt: po.expectedAt || undefined });
-      return po.id;
-    }
-    const created = await api<{ id: string }>("POST", "/purchase-orders", body());
-    setPo((p) => ({ ...p, id: created.id }));
-    return created.id;
-  };
-  const addLine = (p: Product, v: Variant) => {
-    setPo((x) => (x.lines.some((l) => l.variantId === v.id) ? x : { ...x, lines: [...x.lines, { variantId: v.id, title: p.title, detail: variantLabel(v), quantity: 1, receivedQty: 0, unitCostCents: v.costCents ?? 0 }] }));
-  };
-  const setLine = (variantId: string, patch: Partial<PoLine>) => setPo((x) => ({ ...x, lines: x.lines.map((l) => (l.variantId === variantId ? { ...l, ...patch } : l)) }));
-
-  if (adding) {
+  if (view === "vendors" && vendor) {
     return (
-      <View style={{ flex: 1, padding: 12, gap: 8 }}>
-        <Button title="Done adding" onPress={() => setAdding(false)} />
-        <ProductSearch onPick={addLine} />
-      </View>
+      <VendorEditor
+        key={vendor === "new" ? "new" : vendor.id}
+        initial={vendor === "new" ? null : vendor}
+        onBack={() => setVendor(null)}
+        onChanged={async (saved) => {
+          await loadVendors();
+          if (saved) setVendor(saved);
+        }}
+        onOpenPo={openPo}
+        onNewPo={startPo}
+      />
     );
   }
 
+  const columns: Column<Po>[] = [
+    { key: "n", label: "PO #", render: (o) => `#${o.number}`, width: 70 },
+    { key: "v", label: "Vendor", render: (o) => o.vendor?.name ?? "", width: 170 },
+    { key: "s", label: "Status", render: (o) => <StatusBadge status={o.status} />, width: 90 },
+    { key: "r", label: "Reference", render: (o) => o.reference ?? "", width: 120 },
+    { key: "loc", label: "Location", render: (o) => o.location?.name ?? "", width: 120 },
+    { key: "c", label: "Created", render: (o) => (o.createdAt ? day(o.createdAt) : ""), width: 100 },
+    { key: "e", label: "Expected", render: (o) => (o.expectedAt ? day(o.expectedAt) : ""), width: 100 },
+    { key: "i", label: "Items", render: (o) => `${o.lines.length} / ${qtyOf(o.lines)}`, width: 80, align: "right" },
+    { key: "t", label: "Total", render: (o) => money(totalOf(o)), width: 100, align: "right" },
+    { key: "rc", label: "Received", render: (o) => `${receivedOf(o.lines)} / ${qtyOf(o.lines)}`, width: 90, align: "right" },
+    { key: "d", label: "Deliveries", render: (o) => o.receipts?.length ?? 0, width: 80, align: "right" },
+    ...(narrow
+      ? []
+      : [
+          {
+            key: "a",
+            label: "",
+            render: (o: Po) => (
+              <View style={[ui.row, { gap: 6 }]}>
+                <Button title={o.status === "DRAFT" && canManage ? "Edit" : "View"} kind="secondary" style={small} onPress={() => openPo(o)} />
+                <Button title="Print" kind="secondary" style={small} onPress={() => print(o)} />
+              </View>
+            ),
+            width: 150,
+          },
+        ]),
+  ];
+
   return (
     <ScrollView contentContainerStyle={{ padding: 12, gap: 12 }}>
-      <Card title={po.number ? `PO #${po.number} · ${po.status.toLowerCase()}` : "New purchase order"} right={<Button title="Back" kind="secondary" onPress={onDone} style={{ minHeight: 36, paddingVertical: 6 }} />}>
-        <Text style={ui.muted}>Vendor</Text>
-        {draft ? <Chips options={vendors.map((v) => [v.id, v.name])} value={po.vendorId} onChange={(vendorId) => setPo({ ...po, vendorId })} /> : <Text style={ui.text}>{po.vendor?.name}</Text>}
-        {vendors.length === 0 && <Text style={[ui.muted, { color: colors.warn }]}>Add a vendor first (Vendors tab).</Text>}
-        <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
-          <Field label="Vendor reference / invoice #"><Input value={po.reference ?? ""} onChange={(reference) => setPo({ ...po, reference })} /></Field>
-          <Field label="Expected (YYYY-MM-DD)"><Input value={po.expectedAt ? po.expectedAt.slice(0, 10) : ""} onChange={(t) => setPo({ ...po, expectedAt: t ? `${t}T00:00:00` : null })} /></Field>
-        </View>
-        <Field label="Notes"><Input value={po.notes ?? ""} onChange={(notes) => setPo({ ...po, notes })} multiline /></Field>
-        <Text style={ui.muted}>Deliver to {location.name}</Text>
-      </Card>
-
-      <Card
-        title={`Items · ${money(total)}`}
-        right={
-          draft ? (
-            <View style={[ui.row, { gap: 6 }]}>
-              <Button title="Suggest reorders" kind="secondary" style={{ minHeight: 36, paddingVertical: 6 }} onPress={() => run(async () => {
-                const s = await api<{ variantId: string; title: string; sku: string; suggestedQty: number; lastCostCents: number | null }[]>("GET", `/purchase-orders/reorder?locationId=${location.id}`);
-                if (s.length === 0) return setMessage("Nothing is below its low-stock level.");
-                setPo((x) => ({ ...x, lines: [...x.lines, ...s.filter((r) => !x.lines.some((l) => l.variantId === r.variantId)).map((r) => ({ variantId: r.variantId, title: r.title, detail: r.sku, quantity: r.suggestedQty, receivedQty: 0, unitCostCents: r.lastCostCents ?? 0 }))] }));
-              })} />
-              <Button title="+ Add items" style={{ minHeight: 36, paddingVertical: 6 }} onPress={() => setAdding(true)} />
+      <Chips options={[["orders", "Purchase orders"], ["vendors", "Vendors"]]} value={view} onChange={(v) => setView(v as "orders" | "vendors")} />
+      {view === "orders" ? (
+        <Card title="Purchase orders" right={canManage ? <Button title={narrow ? "+ New" : "+ New purchase order"} kind="good" style={small} onPress={() => startPo(vendorId || vendors.find((v) => v.active)?.id || "")} /> : undefined}>
+          <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
+            <View style={{ flexGrow: 2, flexBasis: 240, minWidth: 200 }}>
+              <Input value={q} onChange={setQ} placeholder="Search PO #, reference or vendor…" />
             </View>
-          ) : undefined
-        }
-      >
-        {po.lines.length === 0 && <Text style={ui.muted}>No items yet.</Text>}
-        {po.lines.map((l) => (
-          <View key={l.variantId} style={{ gap: 6, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-            <Text style={ui.text}>{l.title}</Text>
-            <Text style={ui.muted}>{l.detail}</Text>
-            <View style={[ui.row, { gap: 8, flexWrap: "wrap", alignItems: "center" }]}>
-              <Text style={ui.muted}>Qty</Text>
-              <TextInput style={[ui.input, { width: 70, paddingVertical: 6 }]} editable={draft} keyboardType="number-pad" defaultValue={String(l.quantity)} onEndEditing={(e) => setLine(l.variantId, { quantity: Math.max(1, Number(e.nativeEvent.text) || 1) })} />
-              <Text style={ui.muted}>@ $</Text>
-              <TextInput style={[ui.input, { width: 90, paddingVertical: 6 }]} editable={draft} keyboardType="decimal-pad" defaultValue={(l.unitCostCents / 100).toFixed(2)} onEndEditing={(e) => setLine(l.variantId, { unitCostCents: Math.max(0, Math.round(Number(e.nativeEvent.text) * 100) || 0) })} />
-              <Text style={ui.text}>= {money(l.quantity * l.unitCostCents)}</Text>
-              {!draft && <Text style={ui.muted}>· received {l.receivedQty}/{l.quantity}</Text>}
-              {receiving && l.quantity - l.receivedQty > 0 && (
-                <>
-                  <Text style={[ui.muted, { color: colors.good }]}>Receive now</Text>
-                  <TextInput style={[ui.input, { width: 70, paddingVertical: 6, borderColor: colors.good }]} keyboardType="number-pad" value={receiving[l.variantId] ?? ""} onChangeText={(t) => setReceiving({ ...receiving, [l.variantId]: t })} />
-                </>
-              )}
-              {draft && <Button title="✕" kind="secondary" style={{ minHeight: 32, paddingVertical: 4 }} onPress={() => setPo((x) => ({ ...x, lines: x.lines.filter((y) => y.variantId !== l.variantId) }))} />}
-            </View>
+            <Picker options={vendors.map((v): [string, string] => [v.id, v.name])} value={vendorId} onChange={setVendorId} noneLabel="All vendors" />
+            <Picker options={locations.map((l): [string, string] => [l.id, l.name])} value={locationId} onChange={setLocationId} noneLabel="All locations" />
           </View>
-        ))}
-      </Card>
-
-      {message && <Text style={ui.text}>{message}</Text>}
-      <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
-        {draft && can("MANAGE_PURCHASING") !== "DENY" && (
-          <>
-            <Button title="Save draft" kind="secondary" onPress={() => run(save, true)} disabled={!po.vendorId} />
-            <Button title="Mark as ordered" kind="good" onPress={() => run(async () => api("POST", `/purchase-orders/${await save()}/order`), true)} disabled={!po.vendorId || po.lines.length === 0} />
-            {po.id && <Button title="Cancel order" kind="danger" onPress={() => run(() => api("POST", `/purchase-orders/${po.id}/cancel`), true)} />}
-          </>
-        )}
-        {!draft && can("MANAGE_PURCHASING") !== "DENY" && po.status !== "CANCELLED" && <Button title="Save notes" kind="secondary" onPress={() => run(save, true)} />}
-        {receivable && can("RECEIVE_STOCK") !== "DENY" && !receiving && (
-          <Button title="Receive items" kind="good" onPress={() => setReceiving(Object.fromEntries(po.lines.filter((l) => l.quantity > l.receivedQty).map((l) => [l.variantId, String(l.quantity - l.receivedQty)])))} />
-        )}
-        {receiving && (
-          <>
-            <Button title="Confirm received" kind="good" onPress={() => run(() => api("POST", `/purchase-orders/${po.id}/receive`, { lines: Object.entries(receiving).map(([variantId, q]) => ({ variantId, quantity: Number(q) || 0 })).filter((l) => l.quantity > 0) }), true)} />
-            <Button title="Back" kind="secondary" onPress={() => setReceiving(null)} />
-          </>
-        )}
-      </View>
-    </ScrollView>
-  );
-}
-
-function Vendors({ vendors, onChanged }: { vendors: Vendor[]; onChanged: () => void }) {
-  const can = useCan();
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  return (
-    <Card title="Vendors">
-      <Table rows={vendors} keyOf={(v) => v.id} columns={[{ key: "n", label: "Name", render: (v) => v.name, width: 200 }, { key: "e", label: "Email", render: (v) => v.email ?? "", width: 200 }, { key: "p", label: "Phone", render: (v) => v.phone ?? "", width: 140 }, { key: "a", label: "Active", render: (v) => <Switch value={v.active} disabled={can("MANAGE_PURCHASING") === "DENY"} onValueChange={(active) => api("PATCH", `/vendors/${v.id}`, { active }).then(onChanged)} />, width: 80 }]} empty="No vendors yet." />
-      {can("MANAGE_PURCHASING") !== "DENY" && (
-        <View style={[ui.row, { gap: 8, flexWrap: "wrap", alignItems: "flex-end" }]}>
-          <Field label="New vendor"><Input value={name} onChange={setName} placeholder="Name" /></Field>
-          <Field label="Email"><Input value={email} onChange={setEmail} keyboard="email-address" /></Field>
-          <Field label="Phone"><Input value={phone} onChange={setPhone} /></Field>
-          <Button title="Add" disabled={!name.trim()} onPress={async () => {
-            setError(null);
-            try {
-              await api("POST", "/vendors", { name: name.trim(), email: email.trim() || undefined, phone: phone.trim() || undefined });
-              setName(""); setEmail(""); setPhone("");
-              onChanged();
-            } catch (e) {
-              setError(e instanceof ApiError ? e.message : String(e));
-            }
-          }} />
-        </View>
+          <Chips options={STATUS_FILTERS} value={status} onChange={(s) => setStatus(s as StatusFilter)} />
+          {error && <Text style={ui.error}>{error}</Text>}
+          <Table rows={orders} keyOf={(o) => o.id ?? ""} onPress={openPo} columns={columns} empty={status === "open" && !q && !vendorId ? "No open purchase orders." : "No purchase orders match."} />
+        </Card>
+      ) : (
+        <VendorList vendors={vendors} onSelect={setVendor} onChanged={loadVendors} />
       )}
-      {error && <Text style={ui.error}>{error}</Text>}
-    </Card>
+    </ScrollView>
   );
 }

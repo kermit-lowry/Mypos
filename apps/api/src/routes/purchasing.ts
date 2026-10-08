@@ -129,7 +129,10 @@ export function purchasingRoutes(app: FastifyInstance, base: Ctx) {
     return reorderSuggestions(prisma, locationId, vendorId);
   });
   app.get("/purchase-orders/:id", staff, async (req) => {
-    const po = await prisma.purchaseOrder.findUnique({ where: { id: id(req) }, include: { vendor: true, location: true, lines: { include: { variant: { include: { product: true } } } } } });
+    const po = await prisma.purchaseOrder.findUnique({
+      where: { id: id(req) },
+      include: { vendor: true, location: true, lines: { include: { variant: { include: { product: true } } } }, receipts: { include: { lines: true }, orderBy: { receivedAt: "desc" } } },
+    });
     if (!po) throw notFound("Purchase order");
     return po;
   });
