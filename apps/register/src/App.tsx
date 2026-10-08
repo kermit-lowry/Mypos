@@ -14,6 +14,7 @@ import { LabelsScreen } from "./screens/LabelsScreen";
 import { LoginScreen } from "./screens/LoginScreen";
 import { LoyaltySettingsScreen } from "./screens/LoyaltySettingsScreen";
 import { SellScreen } from "./screens/SellScreen";
+import { LayawayScreen } from "./screens/LayawayScreen";
 import { clockLabel, ShiftScreen, useClockStatus } from "./screens/ShiftScreen";
 import { StoreSettingsScreen } from "./screens/StoreSettingsScreen";
 import { useLayout } from "./layout";
@@ -26,11 +27,12 @@ import { SessionContext, useCan, useSession, type Session, type Staff } from "./
 import * as storage from "./storage";
 import { colors, ui } from "./theme";
 
-const TABS = ["Sell", "Shift", "Buylist", "Events", "Labels", "Deals", "Activity", "Staff", "Store", "Loyalty", "Display"] as const;
+const TABS = ["Sell", "Shift", "Layaways", "Buylist", "Events", "Labels", "Deals", "Activity", "Staff", "Store", "Loyalty", "Display"] as const;
 type Tab = (typeof TABS)[number];
 /** Gated tabs, shown to employees who have any of the permissions (ALLOW or PIN). */
 const TAB_PERMISSION: Partial<Record<Tab, Permission[]>> = {
   Shift: ["DRAWER_OPEN_CLOSE", "CASH_IN_OUT"],
+  Layaways: ["LAYAWAY_CREATE", "LAYAWAY_CANCEL"],
   Deals: ["MANAGE_DEALS"],
   Activity: ["VIEW_REPORTS"],
   Staff: ["MANAGE_STAFF"],
@@ -130,6 +132,7 @@ function RegisterApp() {
                 {signOutNotice && <Text style={[ui.error, { paddingHorizontal: narrow ? 8 : 16, paddingTop: 4 }]}>{signOutNotice}</Text>}
                 {tab === "Sell" && <SellScreen />}
                 {tab === "Shift" && <ShiftScreen />}
+                {tab === "Layaways" && <LayawayScreen />}
                 {tab === "Buylist" && <BuylistScreen />}
                 {tab === "Events" && <EventsScreen />}
                 {tab === "Labels" && <LabelsScreen />}

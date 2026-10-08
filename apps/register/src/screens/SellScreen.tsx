@@ -1,9 +1,8 @@
-import { cardAmountDue, cardPrice, dualTotals, formatBps, formatCents, isCardPriced, PERMISSIONS, type DualTotals, type Permission, type TenderInput } from "@mypos/shared";
-import * as Crypto from "expo-crypto";
+import { applyBps, cardPrice, dualTotals, formatBps, formatCents, type CartLine, type DualTotals, type Permission } from "@mypos/shared";
 import * as Print from "expo-print";
 import { useEffect, useMemo, useState } from "react";
 import { FlatList, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { api, ApiError, apiText, type Customer, type LoyaltyProgram, type LoyaltyQuote, type Product, type Variant } from "../api";
+import { api, ApiError, apiText, type Customer, type Layaway, type LoyaltyProgram, type LoyaltyQuote, type Product, type Variant } from "../api";
 import { Button } from "../components/Button";
 import { CustomerPicker } from "../components/CustomerPicker";
 import { NumberPrompt } from "../components/NumberPrompt";
@@ -16,12 +15,12 @@ import { useLayout } from "../layout";
 import { imageOf, ProductSearch, variantLabel } from "../components/ProductSearch";
 import { Thumb } from "../components/Thumb";
 import { RewardsPicker } from "../components/RewardsPicker";
-import { TerminalPicker, useTerminal } from "../components/TerminalPicker";
+import { amountTotals, changeFor, TenderSheet, type Due } from "../components/TenderSheet";
+import { useTerminal, type Terminal } from "../components/TerminalPicker";
 import { displayChannel, publishDisplay } from "../display";
 import { useCan, useSession } from "../session";
 import { colors, ui } from "../theme";
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+import { dayLabel, layawayError, PrintStatement } from "./LayawayScreen";
 
 export function SellScreen() {
   const { location, permissions } = useSession();
@@ -43,6 +42,8 @@ export function SellScreen() {
   const [notice, setNotice] = useState<string | null>(null);
   const [showCart, setShowCart] = useState(false);
   const [drawerMsg, setDrawerMsg] = useState<string | null>(null);
+  /** Layaway: attaching the customer it needs, or the sheet itself. */
+  const [layaway, setLayaway] = useState<"customer" | "sheet" | null>(null);
 
   useEffect(() => {
     api<LoyaltyProgram>("GET", "/loyalty/program")
@@ -67,7 +68,10 @@ export function SellScreen() {
   );
   const terminalState = useTerminal();
   const channel = displayChannel(location.id, terminalState.terminal?.id);
-  const [payState, setPayState] = useState<PayState>(null);
+  /** What the tender sheet still has to collect. */
+  const [due, setDue] = useState<Due | null>(null);
+  const [sale, setSale] = useState<SaleDone | null>(null);
+  const layawayOn = location.layawayEnabled !== false && can("LAYAWAY_CREATE") !== "DENY";
 
   // The server prices every cart: automated deals (which depend on the day and
   // time), rewards, and both prices. Charge waits for a quote of this exact cart.
@@ -208,18 +212,18 @@ export function SellScreen() {
   function reset() {
     resetCart();
     setTendering(false);
-    setPayState(null);
+    setLayaway(null);
+    setDue(null);
+    setSale(null);
   }
+
+  /** Layaway needs a customer on the sale; attach one first if there isn't. */
+  const startLayaway = () => setLayaway(customer ? "sheet" : "customer");
 
   // Mirror the sale to the customer-facing display.
   useEffect(() => {
-    if (payState?.done) {
-      publishDisplay(channel, {
-        state: "DONE",
-        storeName: location.name,
-        totalCents: payState.done.totalCents,
-        changeCents: payState.done.changeCents,
-      });
+    if (sale) {
+      publishDisplay(channel, { state: "DONE", storeName: location.name, totalCents: sale.totalCents, changeCents: sale.changeCents });
       return;
     }
     if (lines.length === 0) {
@@ -227,7 +231,7 @@ export function SellScreen() {
       return;
     }
     publishDisplay(channel, {
-      state: tendering ? "PAYING" : "CART",
+      state: tendering || layaway === "sheet" ? "PAYING" : "CART",
       storeName: location.name,
       cardPercent: bps > 0 ? formatBps(bps) : null,
       lines: lines.map((l, i) => ({
@@ -242,7 +246,7 @@ export function SellScreen() {
       promotions: fresh?.promotions.map((p) => ({ name: p.name, discountCents: p.discountCents })) ?? [],
       cash: dual.cash,
       card: dual.card,
-      due: tendering && payState?.due ? payState.due : undefined,
+      due: (tendering || layaway === "sheet") && due ? due : undefined,
       customer: customer ? { name: customer.name, points: customer.loyalty?.points, rewardsCents: customer.loyalty?.rewardsCents } : null,
       earn:
         quote?.earn && quote.earn.amount > 0
@@ -251,7 +255,7 @@ export function SellScreen() {
             : `${formatCents(quote.earn.amount)} rewards`
           : null,
     });
-  }, [channel, lines, dual, tendering, payState, customer, fresh, bps, location.name]);
+  }, [channel, lines, dual, tendering, layaway, due, sale, customer, fresh, bps, location.name]);
 
   const cartCount = lines.reduce((a, l) => a + l.quantity, 0);
   return (
@@ -268,7 +272,10 @@ export function SellScreen() {
               onChange={(c) => {
                 setCustomer(c);
                 setRewardIds([]);
+                if (c) setLayaway((l) => (l === "customer" ? "sheet" : l));
               }}
+              open={layaway === "customer"}
+              onOpenChange={(open) => !open && setLayaway((l) => (l === "customer" ? null : l))}
             />
             {loyaltyOn && program!.type === "POINTS" && (
               <Button
@@ -377,11 +384,12 @@ export function SellScreen() {
               {quoteError && <Text style={ui.error}>{quoteError}</Text>}
             </View>
             {notice && <Text style={ui.error}>{notice}</Text>}
-            <View style={[ui.row, { gap: 8 }]}>
+            <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
               <Button title="Clear" kind="secondary" onPress={clearCart} disabled={!lines.length || can("CART_CLEAR") === "DENY"} />
               {can("DISCOUNT_LINE") !== "DENY" && (
                 <Button title="% Cart" kind="secondary" onPress={() => setDiscounting("cart")} disabled={!lines.length} />
               )}
+              {layawayOn && <Button title="Layaway" kind="secondary" onPress={startLayaway} disabled={!lines.length || !quoteReady} />}
               <Button title="Charge" kind="good" onPress={() => setTendering(true)} disabled={!lines.length || !quoteReady} style={{ flex: 1 }} />
             </View>
             {can("NO_SALE") !== "DENY" && (
@@ -423,13 +431,13 @@ export function SellScreen() {
       )}
 
       {tendering && (
-        <TenderSheet
+        <TenderSheet<{ order: { id: string; number: number; totalCents: number; cardAdjustmentCents: number }; changeCents: number }>
           dual={dual}
           bps={bps}
           cardPricedTenders={location.cardPricedTenders ?? []}
           terminalState={terminalState}
-          onState={setPayState}
           customer={customer}
+          onDue={setDue}
           onCancel={() => setTendering(false)}
           submit={async (tenders, idempotencyKey) => {
             // The register's terminal id puts cash into this register's drawer session.
@@ -448,6 +456,29 @@ export function SellScreen() {
               return api("POST", "/orders/checkout", body, { approvalToken: token });
             }
           }}
+          onPaid={(r, tenders) =>
+            setSale({
+              id: r.order.id,
+              number: r.order.number,
+              totalCents: r.order.totalCents + r.order.cardAdjustmentCents,
+              changeCents: r.changeCents,
+              cash: tenders.some((t) => t.type === "CASH"),
+            })
+          }
+          done={sale && <SaleReceipt sale={sale} terminal={terminalState.terminal} onDone={reset} />}
+        />
+      )}
+
+      {layaway === "sheet" && customer && (
+        <LayawaySheet
+          lines={lines}
+          lineDiscount={lineDiscount}
+          totalCents={dual.cash.totalCents}
+          cartLines={cartLines}
+          customer={customer}
+          terminalState={terminalState}
+          onDue={setDue}
+          onCancel={() => setLayaway(null)}
           onDone={reset}
         />
       )}
@@ -455,304 +486,248 @@ export function SellScreen() {
   );
 }
 
-function Row({ label, value, big }: { label: string; value: number; big?: boolean }) {
+function Row({ label, value, big }: { label: string; value: number | string; big?: boolean }) {
   return (
     <View style={[ui.row, { justifyContent: "space-between" }]}>
       <Text style={big ? ui.h1 : ui.muted}>{label}</Text>
-      <Text style={big ? ui.h1 : ui.text}>{formatCents(value)}</Text>
+      <Text style={big ? ui.h1 : ui.text}>{typeof value === "number" ? formatCents(value) : value}</Text>
     </View>
   );
 }
 
-/** The server refused the sale for a permission this employee doesn't have: say which. */
-function deniedMessage(e: ApiError): string {
-  const p = (e.details as { permission?: Permission } | undefined)?.permission;
-  const what = p && PERMISSIONS[p] ? PERMISSIONS[p].label.toLowerCase() : "do that";
-  return `You don't have permission to ${what}. Ask a manager, or change the sale.`;
+interface SaleDone {
+  id: string;
+  number: number;
+  /** What the customer paid, card adjustments included. */
+  totalCents: number;
+  changeCents: number;
+  cash: boolean;
 }
 
-type PayState = null | { due?: { cashCents: number; cardCents: number }; done?: { totalCents: number; changeCents: number } };
-
-function TenderSheet(props: {
-  dual: DualTotals;
-  bps: number;
-  cardPricedTenders: string[];
-  terminalState: ReturnType<typeof useTerminal>;
-  onState: (s: PayState) => void;
-  customer: Customer | null;
-  onCancel: () => void;
-  submit: (
-    tenders: TenderInput[],
-    idempotencyKey: string,
-  ) => Promise<{ order: { id: string; number: number; totalCents: number; cardAdjustmentCents: number }; changeCents: number }>;
-  onDone: () => void;
-}) {
-  // One key per sale attempt: network retries reuse it so the card is never
-  // double-charged. A new key is only minted after a definite failure.
-  const [idempotencyKey, setIdempotencyKey] = useState(() => Crypto.randomUUID());
-  const { terminals, terminal, select } = props.terminalState;
-  const { dialog } = useLayout();
-  const [pickingTerminal, setPickingTerminal] = useState(false);
-  const [waitingOnCard, setWaitingOnCard] = useState(false);
-  const [tenders, setTenders] = useState<TenderInput[]>([]);
-  const [cashInput, setCashInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [receipt, setReceipt] = useState<{ id: string; number: number; changeCents: number } | null>(null);
+/** After a sale: the change, the receipt, and on to the next customer. */
+function SaleReceipt({ sale, terminal, onDone }: { sale: SaleDone; terminal: Terminal | null; onDone: () => void }) {
   const [printMsg, setPrintMsg] = useState<string | null>(null);
 
-  // Dual pricing: cash-priced tenders pay down the cash total; a card covers
-  // whatever is left at the card price.
-  // Which tenders pay the card price is a store setting (cards always do).
-  const priced = (type: TenderInput["type"]) => isCardPriced(type, props.cardPricedTenders);
-  const cashPricedPaid = tenders.filter((t) => !priced(t.type)).reduce((a, t) => a + t.amountCents, 0);
-  const cardPaid = tenders.filter((t) => priced(t.type)).reduce((a, t) => a + t.amountCents, 0);
-  // Once something pays at the card price, the rest must too (cash-priced tenders go first).
-  const hasCard = tenders.some((t) => priced(t.type));
-  const cashDue = hasCard ? 0 : Math.max(0, props.dual.cash.totalCents - cashPricedPaid);
-  const cardDue = cardAmountDue(props.dual, cashPricedPaid);
-  const cardRemaining = Math.max(0, cardDue - cardPaid);
-  const dueFor = (type: TenderInput["type"]) => (priced(type) ? cardRemaining : cashDue);
-  const due = cashDue;
-  const ready = hasCard ? cardPaid === cardDue : cashDue === 0;
-  const [prompt, setPrompt] = useState<null | "CHECK" | "GIFT_CARD">(null);
-  const can = useCan();
-  const creditLevel = can("TENDER_STORE_CREDIT");
-
+  // Cash sales: print the receipt and pop the drawer for change.
   useEffect(() => {
-    if (!receipt) props.onState({ due: { cashCents: cashDue, cardCents: hasCard ? 0 : cardDue } });
-  }, [cashDue, cardDue, hasCard, receipt]);
-  const credit = props.customer?.storeCreditCents ?? 0;
-  const creditUsed = tenders.filter((t) => t.type === "STORE_CREDIT").reduce((a, t) => a + t.amountCents, 0);
-  const rewards = props.customer?.loyalty?.rewardsCents ?? 0;
-  const rewardsUsed = tenders.filter((t) => t.type === "LOYALTY").reduce((a, t) => a + t.amountCents, 0);
+    if (!sale.cash || !terminal?.receiptPrinterHost) return;
+    api("POST", `/orders/${sale.id}/receipt/print`, { terminalId: terminal.id, target: "printer", openDrawer: true })
+      .then(() => setPrintMsg("Receipt printed · drawer open"))
+      .catch((e) => setPrintMsg(e instanceof ApiError ? `Printer: ${e.message}` : String(e)));
+  }, [sale.id]);
 
-  const addCash = (handed: number) => {
-    if (handed <= 0 || due <= 0) return;
-    setTenders((t) => [...t, { type: "CASH", amountCents: Math.min(handed, due), tenderedCents: handed }]);
-    setCashInput("");
-  };
-  const addCard = () => {
-    if (due <= 0) return;
-    if (terminal) return setTenders((t) => [...t, { type: "CARD", amountCents: cardRemaining, terminalId: terminal.id }]);
-    // Development without a terminal: the API's mock processor approves this token.
-    if (__DEV__ && terminals?.length === 0) return setTenders((t) => [...t, { type: "CARD", amountCents: cardRemaining, paymentToken: "tok_ok" }]);
-    setPickingTerminal(true);
-  };
-  const addCredit = () => {
-    const amt = Math.min(dueFor("STORE_CREDIT"), credit - creditUsed);
-    if (amt > 0) setTenders((t) => [...t, { type: "STORE_CREDIT", amountCents: amt }]);
-  };
+  return (
+    <>
+      <Text style={ui.h1}>Sale #{sale.number} complete</Text>
+      {sale.changeCents > 0 && <Text style={[ui.h1, { color: colors.good, fontSize: 40 }]}>Change {formatCents(sale.changeCents)}</Text>}
+      <View style={[ui.row, { gap: 8 }]}>
+        {terminal && (
+          <Button
+            title={terminal.receiptPrinterHost ? "Print receipt" : "Print on terminal"}
+            kind="secondary"
+            style={{ flex: 1 }}
+            onPress={async () => {
+              try {
+                const r = await api<{ on: string }>("POST", `/orders/${sale.id}/receipt/print`, { terminalId: terminal.id });
+                setPrintMsg(r.on === "printer" ? "Printing" : "Printing on the terminal");
+              } catch (e) {
+                setPrintMsg(e instanceof ApiError ? e.message : String(e));
+              }
+            }}
+          />
+        )}
+        <Button
+          title={terminal ? "Other printer…" : "Print receipt"}
+          kind="secondary"
+          style={{ flex: 1 }}
+          onPress={async () => {
+            try {
+              // System print dialog: AirPrint on iPad, Android's print service on Android.
+              await Print.printAsync({ html: await apiText("GET", `/orders/${sale.id}/receipt?format=html`) });
+            } catch (e) {
+              setPrintMsg(e instanceof Error ? e.message : String(e));
+            }
+          }}
+        />
+      </View>
+      {printMsg && <Text style={ui.muted}>{printMsg}</Text>}
+      <Button title="New sale" kind="good" onPress={onDone} />
+    </>
+  );
+}
 
-  const addCheck = (reference: string) => {
-    const amt = dueFor("CHECK");
-    if (amt > 0) setTenders((t) => [...t, { type: "CHECK", amountCents: amt, reference }]);
-  };
-  const addGiftCard = async (code: string) => {
-    try {
-      const g = await api<{ code: string; balanceCents: number }>("GET", `/gift-cards/${encodeURIComponent(code)}`);
-      const used = tenders.filter((t) => t.giftCardCode === g.code).reduce((a, t) => a + t.amountCents, 0);
-      const amt = Math.min(dueFor("GIFT_CARD"), g.balanceCents - used);
-      if (amt <= 0) return setError(`Gift card ${g.code} has no balance left`);
-      setTenders((t) => [...t, { type: "GIFT_CARD", amountCents: amt, giftCardCode: g.code }]);
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e));
-    }
-  };
-  const addRewards = () => {
-    const amt = Math.min(dueFor("LOYALTY"), rewards - rewardsUsed);
-    if (amt > 0) setTenders((t) => [...t, { type: "LOYALTY", amountCents: amt }]);
-  };
+// ─── Layaway ─────────────────────────────────────────────────────
 
-  async function complete() {
-    setBusy(true);
-    setError(null);
-    setWaitingOnCard(tenders.some((t) => t.type === "CARD" && t.terminalId));
-    try {
-      // The server holds the request open while the customer pays on the
-      // terminal. If our connection drops and we resubmit, it tells us the
-      // first attempt is still running, so we wait instead of charging again.
-      for (let attempt = 0; ; attempt++) {
-        try {
-          const r = await props.submit(tenders, idempotencyKey);
-          setReceipt({ id: r.order.id, number: r.order.number, changeCents: r.changeCents });
-          props.onState({ done: { totalCents: r.order.totalCents + r.order.cardAdjustmentCents, changeCents: r.changeCents } });
-          // Cash sales: print the receipt and pop the drawer for change.
-          if (terminal?.receiptPrinterHost && tenders.some((t) => t.type === "CASH")) {
-            api("POST", `/orders/${r.order.id}/receipt/print`, { terminalId: terminal.id, target: "printer", openDrawer: true })
-              .then(() => setPrintMsg("Receipt printed · drawer open"))
-              .catch((e) => setPrintMsg(e instanceof ApiError ? `Printer: ${e.message}` : String(e)));
-          }
-          return;
-        } catch (e) {
-          if (e instanceof ApiError && e.code === "SALE_IN_PROGRESS" && attempt < 80) {
-            await sleep(3000);
-            continue;
-          }
-          throw e;
-        }
-      }
-    } catch (e) {
-      setError(
-        e instanceof ApiError
-          ? e.code === "PERMISSION_DENIED"
-            ? deniedMessage(e)
-            : e.code === "DRAWER_CLOSED"
-              ? "Start a shift (Shift tab) before taking cash"
-              : e.message
-          : String(e),
-      );
-      // Declines, unknown outcomes, and validation errors closed out this attempt;
-      // only a network failure leaves it open to retry with the same key.
-      if (!(e instanceof ApiError && e.code === "NETWORK")) setIdempotencyKey(Crypto.randomUUID());
-    } finally {
-      setBusy(false);
-      setWaitingOnCard(false);
-    }
-  }
+const DAY = 86_400_000;
+/** "2026-10-08" in local time, for the due-date field. */
+const localDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+/** End of that day, local time; undefined unless it's a real YYYY-MM-DD. */
+function parseDay(s: string): Date | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return undefined;
+  const d = new Date(`${s}T23:59:59`);
+  return Number.isNaN(d.getTime()) || localDay(d) !== s ? undefined : d;
+}
+const cents = (t: string) => {
+  const n = Math.round(Number(t) * 100);
+  return t.trim() !== "" && Number.isFinite(n) && n >= 0 ? n : undefined;
+};
+
+interface LayawayOpened {
+  layaway: Layaway;
+  changeCents: number;
+  cash: boolean;
+}
+
+/**
+ * Put the cart on layaway for the attached customer: the items at today's
+ * prices, a deposit (at least the store's minimum), a due date and notes.
+ * The deposit is taken like any other payment, then the cart is done.
+ */
+function LayawaySheet(props: {
+  lines: Line[];
+  lineDiscount: (i: number) => number;
+  /** The cart's cash-price total, as the server quoted it. */
+  totalCents: number;
+  cartLines: CartLine[];
+  customer: Customer;
+  terminalState: ReturnType<typeof useTerminal>;
+  onDue: (d: Due) => void;
+  onCancel: () => void;
+  onDone: () => void;
+}) {
+  const { location } = useSession();
+  const guard = useGuard();
+  const { dialog } = useLayout();
+  const bps = location.cardPriceBps;
+  const minDeposit = Math.min(props.totalCents, applyBps(props.totalCents, location.layawayMinDepositBps ?? 2000));
+  const [deposit, setDeposit] = useState((minDeposit / 100).toFixed(2));
+  const [dueDay, setDueDay] = useState(localDay(new Date(Date.now() + (location.layawayTermDays ?? 30) * DAY)));
+  const [notes, setNotes] = useState("");
+  const [tendering, setTendering] = useState(false);
+  const [opened, setOpened] = useState<LayawayOpened | null>(null);
+
+  const depositCents = cents(deposit);
+  const dueAt = parseDay(dueDay);
+  const problem =
+    depositCents === undefined
+      ? "Enter the deposit"
+      : depositCents < minDeposit
+        ? `The minimum deposit is ${formatCents(minDeposit)}`
+        : depositCents > props.totalCents
+          ? `The deposit can't be more than the ${formatCents(props.totalCents)} total`
+          : !dueAt
+            ? "Due date as YYYY-MM-DD"
+            : dueAt.getTime() < Date.now()
+              ? "The due date is in the past"
+              : null;
 
   return (
     <Modal transparent animationType="fade" onRequestClose={props.onCancel}>
       <View style={{ flex: 1, backgroundColor: colors.overlay, justifyContent: "center", alignItems: "center" }}>
-        <ScrollView style={[ui.panel, { width: dialog(560), maxHeight: "90%", flexGrow: 0 }]} contentContainerStyle={{ gap: 12 }}>
-          {receipt ? (
-            <>
-              <Text style={ui.h1}>Sale #{receipt.number} complete</Text>
-              {receipt.changeCents > 0 && (
-                <Text style={[ui.h1, { color: colors.good, fontSize: 40 }]}>Change {formatCents(receipt.changeCents)}</Text>
-              )}
-              <View style={[ui.row, { gap: 8 }]}>
-                {terminal && (
-                  <Button
-                    title={terminal.receiptPrinterHost ? "Print receipt" : "Print on terminal"}
-                    kind="secondary"
-                    style={{ flex: 1 }}
-                    onPress={async () => {
-                      try {
-                        const r = await api<{ on: string }>("POST", `/orders/${receipt.id}/receipt/print`, { terminalId: terminal.id });
-                        setPrintMsg(r.on === "printer" ? "Printing" : "Printing on the terminal");
-                      } catch (e) {
-                        setPrintMsg(e instanceof ApiError ? e.message : String(e));
-                      }
-                    }}
-                  />
-                )}
-                <Button
-                  title={terminal ? "Other printer…" : "Print receipt"}
-                  kind="secondary"
-                  style={{ flex: 1 }}
-                  onPress={async () => {
-                    try {
-                      // System print dialog: AirPrint on iPad, Android's print service on Android.
-                      await Print.printAsync({ html: await apiText("GET", `/orders/${receipt.id}/receipt?format=html`) });
-                    } catch (e) {
-                      setPrintMsg(e instanceof Error ? e.message : String(e));
-                    }
-                  }}
-                />
-              </View>
-              {printMsg && <Text style={ui.muted}>{printMsg}</Text>}
-              <Button title="New sale" kind="good" onPress={props.onDone} />
-            </>
-          ) : (
-            <>
-              <Text style={ui.h1}>
-                {ready
-                  ? "Ready to complete"
-                  : props.bps > 0
-                    ? `Due ${formatCents(cashDue)} cash · ${formatCents(cardDue)} card`
-                    : `Due ${formatCents(cashDue)}`}
-              </Text>
-              {tenders.map((t, i) => (
-                <View key={i} style={[ui.row, { justifyContent: "space-between" }]}>
-                  <Text style={ui.text}>
-                    {t.type === "LOYALTY" ? "REWARDS" : t.type.replace("_", " ")}
-                    {t.type === "CHECK" && t.reference ? ` #${t.reference}` : ""}
-                    {t.type === "GIFT_CARD" && t.giftCardCode ? ` ${t.giftCardCode}` : ""}
-                    {t.tenderedCents && t.tenderedCents > t.amountCents ? ` (handed ${formatCents(t.tenderedCents)})` : ""}
-                  </Text>
-                  <Pressable onPress={() => setTenders((ts) => ts.filter((_, j) => j !== i))}>
-                    <Text style={ui.text}>{formatCents(t.amountCents)} ✕</Text>
-                  </Pressable>
-                </View>
-              ))}
-              {!ready && (
-                <>
-                  {!hasCard && (
-                    <>
-                      <Text style={ui.muted}>Cash</Text>
-                      <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
-                        <Button title="Exact" kind="secondary" onPress={() => addCash(due)} />
-                        {[2000, 5000, 10000]
-                          .filter((d) => d >= due)
-                          .map((d) => (
-                            <Button key={d} title={formatCents(d)} kind="secondary" onPress={() => addCash(d)} />
-                          ))}
-                        <TextInput
-                          style={[ui.input, { width: 120 }]}
-                          placeholder="Other"
-                          placeholderTextColor={colors.muted}
-                          keyboardType="decimal-pad"
-                          value={cashInput}
-                          onChangeText={setCashInput}
-                          onSubmitEditing={() => addCash(Math.round(Number(cashInput) * 100))}
-                        />
-                      </View>
-                    </>
-                  )}
-                  <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
-                    <Button title={`Card ${formatCents(cardRemaining)}`} onPress={addCard} style={{ flexGrow: 1 }} />
-                    {dueFor("CHECK") > 0 && <Button title="Check" kind="secondary" onPress={() => setPrompt("CHECK")} style={{ flexGrow: 1 }} />}
-                    {dueFor("GIFT_CARD") > 0 && (
-                      <Button title="Gift card" kind="secondary" onPress={() => setPrompt("GIFT_CARD")} style={{ flexGrow: 1 }} />
-                    )}
-                    {creditLevel !== "DENY" && credit - creditUsed > 0 && dueFor("STORE_CREDIT") > 0 && (
-                      <Button
-                        title={`Store credit (${formatCents(credit - creditUsed)})${creditLevel === "PIN" ? " · PIN" : ""}`}
-                        kind="secondary"
-                        onPress={addCredit}
-                        style={{ flexGrow: 1 }}
-                      />
-                    )}
-                    {rewards - rewardsUsed > 0 && dueFor("LOYALTY") > 0 && (
-                      <Button
-                        title={`Rewards (${formatCents(rewards - rewardsUsed)})`}
-                        kind="secondary"
-                        onPress={addRewards}
-                        style={{ flexGrow: 1 }}
-                      />
-                    )}
-                  </View>
-                  {hasCard && props.bps > 0 && <Text style={ui.muted}>The rest is at the card price. Remove card-priced payments to take cash.</Text>}
-                </>
-              )}
-              {waitingOnCard && (
-                <Text style={[ui.h2, { color: colors.link, textAlign: "center" }]}>
-                  Tap, insert, or swipe on {terminal?.name ?? "the terminal"}
+        <ScrollView style={[ui.panel, { width: dialog(560), maxHeight: "90%", flexGrow: 0 }]} contentContainerStyle={{ gap: 12 }} keyboardShouldPersistTaps="handled">
+          <Text style={ui.h1}>Layaway for {props.customer.name}</Text>
+          <Text style={ui.muted}>Today's prices and deals are locked in; the items are held until the balance is paid.</Text>
+          <View>
+            {props.lines.map((l, i) => (
+              <View key={l.variant.id} style={[ui.row, { justifyContent: "space-between", gap: 8, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.border }]}>
+                <Text style={[ui.text, { flex: 1 }]} numberOfLines={1}>
+                  {l.quantity} × {l.product.title}
                 </Text>
-              )}
-              {error && <Text style={ui.error}>{error}</Text>}
-              <Pressable onPress={() => setPickingTerminal(true)} disabled={busy}>
-                <Text style={ui.muted}>Terminal: {terminal ? terminal.name : "none selected"} · change</Text>
-              </Pressable>
-              <View style={[ui.row, { gap: 8 }]}>
-                <Button title="Back" kind="secondary" onPress={props.onCancel} disabled={busy} />
-                <Button title="Complete sale" kind="good" onPress={complete} disabled={!ready} busy={busy} style={{ flex: 1 }} />
+                <Text style={ui.text}>{formatCents(unitPrice(l) * l.quantity - props.lineDiscount(i))}</Text>
               </View>
-            </>
-          )}
+            ))}
+          </View>
+          <View style={{ gap: 4 }}>
+            <Row label="Total (cash price)" value={props.totalCents} big />
+            <Row label={`Minimum deposit (${formatBps(location.layawayMinDepositBps ?? 2000)})`} value={minDeposit} />
+          </View>
+          <View style={{ gap: 6 }}>
+            <Text style={ui.muted}>Deposit</Text>
+            <TextInput style={[ui.input, { fontSize: 22 }]} value={deposit} onChangeText={setDeposit} keyboardType="decimal-pad" placeholder="0.00" placeholderTextColor={colors.muted} selectTextOnFocus />
+            <View style={[ui.row, { gap: 6, flexWrap: "wrap" }]}>
+              {[
+                { title: "Minimum", cents: minDeposit },
+                { title: "Half", cents: Math.round(props.totalCents / 2) },
+                { title: "In full", cents: props.totalCents },
+              ]
+                .filter((d) => d.cents >= minDeposit)
+                .map((d) => (
+                  <Pressable key={d.title} onPress={() => setDeposit((d.cents / 100).toFixed(2))} style={{ paddingVertical: 8, paddingHorizontal: 12, borderRadius: 16, backgroundColor: colors.panelAlt }}>
+                    <Text style={ui.text}>
+                      {d.title} · {formatCents(d.cents)}
+                    </Text>
+                  </Pressable>
+                ))}
+            </View>
+          </View>
+          <View style={{ gap: 6 }}>
+            <Text style={ui.muted}>Balance due by</Text>
+            <TextInput style={ui.input} value={dueDay} onChangeText={setDueDay} placeholder="YYYY-MM-DD" placeholderTextColor={colors.muted} autoCorrect={false} autoCapitalize="none" />
+          </View>
+          <TextInput style={ui.input} value={notes} onChangeText={setNotes} placeholder="Notes (optional)" placeholderTextColor={colors.muted} />
+          {problem && depositCents !== undefined && <Text style={ui.error}>{problem}</Text>}
+          <View style={[ui.row, { gap: 8 }]}>
+            <Button title="Back" kind="secondary" onPress={props.onCancel} />
+            <Button
+              title={depositCents !== undefined && !problem ? `Take deposit ${formatCents(depositCents)}` : "Take deposit"}
+              kind="good"
+              onPress={() => setTendering(true)}
+              disabled={!!problem}
+              style={{ flex: 1 }}
+            />
+          </View>
         </ScrollView>
       </View>
-      {prompt && (
-        <NumberPrompt
-          title={prompt === "CHECK" ? "Check number" : "Gift card"}
-          message={prompt === "CHECK" ? `Check for ${formatCents(dueFor("CHECK"))}` : "Scan or type the gift card code"}
-          onSubmitText={(v) => (prompt === "CHECK" ? addCheck(v) : addGiftCard(v))}
-          onClose={() => setPrompt(null)}
+
+      {tendering && depositCents !== undefined && dueAt && (
+        <TenderSheet<Layaway>
+          dual={amountTotals(depositCents, bps)}
+          bps={bps}
+          cardPricedTenders={location.cardPricedTenders ?? []}
+          terminalState={props.terminalState}
+          customer={props.customer}
+          heading={`Deposit on layaway · ${props.customer.name} · total ${formatCents(props.totalCents)}`}
+          submitLabel="Take deposit"
+          exclude={["LOYALTY"]}
+          onDue={props.onDue}
+          onCancel={() => (opened ? props.onDone() : setTendering(false))}
+          submit={async (tenders, idempotencyKey) => {
+            const body = {
+              locationId: location.id,
+              customerId: props.customer.id,
+              lines: props.cartLines,
+              tenders,
+              dueAt: dueAt.toISOString(),
+              notes: notes.trim() || undefined,
+              idempotencyKey,
+              terminalId: props.terminalState.terminal?.id,
+            };
+            try {
+              const r = await guard("LAYAWAY_CREATE", (t) => api<Layaway>("POST", "/layaways", body, { approvalToken: t }));
+              if (!r) throw new ApiError(0, "CANCELLED", "Manager approval cancelled");
+              return r;
+            } catch (e) {
+              throw layawayError(e);
+            }
+          }}
+          onPaid={(layaway, tenders) => setOpened({ layaway, changeCents: changeFor(tenders), cash: tenders.some((t) => t.type === "CASH") })}
+          done={
+            opened && (
+              <>
+                <Text style={ui.h1}>Layaway #{opened.layaway.number} opened</Text>
+                {opened.changeCents > 0 && <Text style={[ui.h1, { color: colors.good, fontSize: 40 }]}>Change {formatCents(opened.changeCents)}</Text>}
+                <View style={{ gap: 4 }}>
+                  <Row label="Total" value={opened.layaway.totalCents} />
+                  <Row label="Deposit" value={opened.layaway.paidCents} />
+                  <Row label="Balance" value={opened.layaway.balanceCents} big />
+                  <Row label="Due by" value={dayLabel(opened.layaway.dueAt)} />
+                </View>
+                <PrintStatement layawayId={opened.layaway.id} terminal={props.terminalState.terminal} auto={opened.cash} />
+                <Button title="Done" kind="good" onPress={props.onDone} />
+              </>
+            )
+          }
         />
-      )}
-      {pickingTerminal && terminals && (
-        <TerminalPicker terminals={terminals} selectedId={terminal?.id} onSelect={select} onClose={() => setPickingTerminal(false)} />
       )}
     </Modal>
   );

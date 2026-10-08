@@ -6,8 +6,24 @@ import { useLayout } from "../layout";
 import { colors, ui } from "../theme";
 import { Button } from "./Button";
 
-export function CustomerPicker({ customer, onChange }: { customer: Customer | null; onChange: (c: Customer | null) => void }) {
+export function CustomerPicker({
+  customer,
+  onChange,
+  open: forceOpen,
+  onOpenChange,
+}: {
+  customer: Customer | null;
+  onChange: (c: Customer | null) => void;
+  /** Open the search from outside (a layaway needs a customer). */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}) {
   const [open, setOpen] = useState(false);
+  const visible = open || !!forceOpen;
+  const close = () => {
+    setOpen(false);
+    onOpenChange?.(false);
+  };
   const [q, setQ] = useState("");
   const [results, setResults] = useState<Customer[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -16,7 +32,7 @@ export function CustomerPicker({ customer, onChange }: { customer: Customer | nu
   async function pick(c: Customer) {
     // Re-fetch for the live store-credit balance.
     onChange(await api<Customer>("GET", `/customers/${c.id}`));
-    setOpen(false);
+    close();
   }
 
   async function create() {
@@ -44,7 +60,7 @@ export function CustomerPicker({ customer, onChange }: { customer: Customer | nu
           <Text style={ui.muted}>+ Attach customer</Text>
         )}
       </Pressable>
-      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+      <Modal visible={visible} transparent animationType="fade" onRequestClose={close}>
         <View style={{ flex: 1, backgroundColor: colors.overlay, justifyContent: "center", padding: compact ? 12 : 80 }}>
           <View style={[ui.panel, { maxHeight: "90%" }]}>
             <Text style={ui.h1}>Customer</Text>
@@ -71,7 +87,7 @@ export function CustomerPicker({ customer, onChange }: { customer: Customer | nu
             />
             <View style={[ui.row, { gap: 8 }]}>
               <Button title={`New customer "${q}"`} kind="secondary" disabled={!q.trim()} onPress={create} style={{ flex: 1 }} />
-              <Button title="Close" kind="secondary" onPress={() => setOpen(false)} />
+              <Button title="Close" kind="secondary" onPress={close} />
             </View>
           </View>
         </View>

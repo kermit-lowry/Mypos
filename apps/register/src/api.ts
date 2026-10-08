@@ -201,6 +201,13 @@ export interface Location {
   labelPrinterHost: string | null;
   receiptHeader: string | null;
   receiptFooter: string | null;
+  /** Layaway terms (absent on servers without layaway). */
+  layawayEnabled?: boolean;
+  /** Minimum deposit as bps of the layaway total (2000 = 20%). */
+  layawayMinDepositBps?: number;
+  layawayTermDays?: number;
+  layawayCancelFeeCents?: number;
+  layawayCancelFeeBps?: number;
 }
 
 /** Fetch a text/HTML response (receipts, labels). */
@@ -317,4 +324,78 @@ export interface TimeEntry {
   clockIn: string;
   clockOut?: string | null;
   breakMinutes?: number;
+}
+
+// ─── Layaway ─────────────────────────────────────────────────────
+
+export type LayawayStatus = "ACTIVE" | "COMPLETED" | "CANCELLED";
+
+/** An item held on a layaway, at the price locked when it opened. */
+export interface LayawayLine {
+  id: string;
+  variantId: string;
+  title: string;
+  quantity: number;
+  unitPriceCents: number;
+  /** Total discount on the line, including deals. */
+  discountCents: number;
+  promoDiscountCents: number;
+  taxable: boolean;
+  variant?: { sku?: string | null; imageUrl?: string | null; product?: { title?: string; imageUrl?: string | null } | null } | null;
+}
+
+/** A deposit or payment toward a layaway. A card pays the card price: only `appliedCents` reduces the balance. */
+export interface LayawayPayment {
+  id: string;
+  amountCents: number;
+  appliedCents: number;
+  tender: string;
+  status: string;
+  cardBrand?: string | null;
+  cardLast4?: string | null;
+  changeCents?: number;
+  createdAt: string;
+  staff?: { name: string } | null;
+}
+
+/**
+ * Items held for a customer against a deposit and paid off over time. Totals
+ * are cash prices locked when it opened; completing it creates the sale.
+ */
+export interface Layaway {
+  id: string;
+  number: number;
+  status: LayawayStatus;
+  locationId: string;
+  customerId: string;
+  customer?: { id: string; name: string; email?: string | null; phone?: string | null } | null;
+  staff?: { name: string } | null;
+  subtotalCents: number;
+  discountCents: number;
+  taxCents: number;
+  totalCents: number;
+  /** Card markup in effect when it opened. */
+  cardPriceBps: number;
+  cardAdjustmentCents: number;
+  cardAdjustmentTaxCents: number;
+  paidCents: number;
+  balanceCents: number;
+  overdue: boolean;
+  dueAt: string;
+  notes?: string | null;
+  createdAt: string;
+  completedAt?: string | null;
+  /** The sale created at pickup. */
+  orderId?: string | null;
+  cancelledAt?: string | null;
+  cancelFeeCents: number;
+  refundedCents: number;
+  cancelReason?: string | null;
+  /** What cancelling now would cost and return (GET /layaways/:id). */
+  cancelFeePreview?: { feeCents: number; refundCents: number } | null;
+  lines?: LayawayLine[];
+  payments?: LayawayPayment[];
+  /** List rows: how many lines, without the lines themselves. */
+  lineCount?: number;
+  _count?: { lines: number };
 }
