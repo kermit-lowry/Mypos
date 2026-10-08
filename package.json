@@ -1,0 +1,12 @@
+{
+  "name": "mypos",
+  "private": true,
+  "packageManager": "pnpm@10.28.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "dev:api": "pnpm --filter @mypos/api dev",
+    "dev:register": "pnpm --filter @mypos/register start"
+  }
+}

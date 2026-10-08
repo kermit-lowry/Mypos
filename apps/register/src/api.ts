@@ -1,0 +1,102 @@
+import * as SecureStore from "expo-secure-store";
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    public code: string,
+    message: string,
+    public details?: unknown,
+  ) {
+    super(message);
+  }
+}
+
+let baseUrl = "http://localhost:4000";
+let token: string | null = null;
+
+export async function loadSession(): Promise<{ baseUrl: string; token: string | null }> {
+  baseUrl = (await SecureStore.getItemAsync("apiUrl")) ?? baseUrl;
+  token = await SecureStore.getItemAsync("token");
+  return { baseUrl, token };
+}
+
+export async function setApiUrl(url: string) {
+  baseUrl = url.replace(/\/$/, "");
+  await SecureStore.setItemAsync("apiUrl", baseUrl);
+}
+
+export async function setToken(t: string | null) {
+  token = t;
+  if (t) await SecureStore.setItemAsync("token", t);
+  else await SecureStore.deleteItemAsync("token");
+}
+
+export const getApiUrl = () => baseUrl;
+
+/**
+ * JSON request. Network failures on POSTs carrying an idempotencyKey are
+ * retried with the same key, so a sale is never charged twice when the store
+ * wifi drops mid-request.
+ */
+export async function api<T = any>(method: "GET" | "POST" | "PATCH", path: string, body?: unknown): Promise<T> {
+  const retries = body && typeof body === "object" && "idempotencyKey" in body ? 3 : 0;
+  for (let attempt = 0; ; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch (e) {
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
+        continue;
+      }
+      throw new ApiError(0, "NETWORK", "Can't reach the server. Check the connection and try again.");
+    }
+    const text = await res.text();
+    const json = text ? JSON.parse(text) : undefined;
+    if (!res.ok) throw new ApiError(res.status, json?.error ?? "ERROR", json?.message ?? res.statusText, json?.details);
+    return json as T;
+  }
+}
+
+export interface Variant {
+  id: string;
+  sku: string;
+  priceCents: number;
+  marketCents: number | null;
+  condition: string | null;
+  finish: string | null;
+  size: string | null;
+  colorway: string | null;
+  itemCondition: string | null;
+  taxable: boolean;
+  serialized: boolean;
+  inventory?: { locationId: string; onHand: number }[];
+}
+
+export interface Product {
+  id: string;
+  kind: string;
+  title: string;
+  brand: string | null;
+  setName: string | null;
+  setCode: string | null;
+  collectorNumber: string | null;
+  variants: Variant[];
+}
+
+export interface Customer {
+  id: string;
+  name: string;
+  email: string | null;
+  storeCreditCents?: number;
+}
+
+export interface Location {
+  id: string;
+  name: string;
+  taxRateBps: number;
+}

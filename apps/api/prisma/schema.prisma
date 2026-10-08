@@ -1,0 +1,581 @@
+// MyPOS data model. All money is integer cents.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Stores & staff ──────────────────────────────────────────────
+
+model Location {
+  id         String   @id @default(cuid())
+  name       String
+  /// Sales tax rate in basis points (8.25% = 825).
+  taxRateBps Int      @default(0)
+  timezone   String   @default("America/New_York")
+  createdAt  DateTime @default(now())
+
+  inventory   InventoryLevel[]
+  movements   InventoryMovement[]
+  orders      Order[]
+  buylists    BuylistTicket[]
+  events      Event[]
+  terminals   Terminal[]
+  consignment ConsignmentItem[]
+}
+
+model Staff {
+  id        String    @id @default(cuid())
+  name      String
+  email     String    @unique
+  /// bcrypt hash of the register PIN.
+  pinHash   String
+  role      StaffRole @default(CASHIER)
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+
+  orders    Order[]
+  buylists  BuylistTicket[]
+  movements InventoryMovement[]
+  auths     Authentication[]
+}
+
+enum StaffRole {
+  OWNER
+  MANAGER
+  CASHIER
+}
+
+/// A card-present payment device registered with the merchant gateway.
+model Terminal {
+  id         String   @id @default(cuid())
+  locationId String
+  location   Location @relation(fields: [locationId], references: [id])
+  name       String
+  /// Device identifier on the gateway (e.g. NMI device GUID).
+  gatewayRef String
+  createdAt  DateTime @default(now())
+}
+
+// ─── Customers & store credit ────────────────────────────────────
+
+model Customer {
+  id        String   @id @default(cuid())
+  name      String
+  email     String?  @unique
+  phone     String?
+  /// Game → player id, e.g. {"pokemon": "1234567", "yugioh": "0000123456"}.
+  playerIds Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  creditEntries  StoreCreditEntry[]
+  orders         Order[]
+  buylists       BuylistTicket[]
+  registrations  EventRegistration[]
+  preorders      Preorder[]
+  consignor      Consignor?
+}
+
+/// Append-only ledger. Balance = SUM(amountCents). Never update rows.
+model StoreCreditEntry {
+  id          String   @id @default(cuid())
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id])
+  amountCents Int
+  reason      String
+  orderId     String?
+  buylistId   String?
+  createdAt   DateTime @default(now())
+
+  @@index([customerId])
+}
+
+model GiftCard {
+  id           String   @id @default(cuid())
+  code         String   @unique
+  balanceCents Int
+  createdAt    DateTime @default(now())
+}
+
+// ─── Catalog ─────────────────────────────────────────────────────
+
+enum ProductKind {
+  TCG_SINGLE
+  TCG_SEALED
+  SNEAKER
+  APPAREL
+  COLLECTIBLE
+  ACCESSORY
+  EVENT_ENTRY
+}
+
+enum SalesChannel {
+  POS
+  STOREFRONT
+  SHOPIFY
+  TCGPLAYER
+  EBAY
+}
+
+model Product {
+  id          String         @id @default(cuid())
+  kind        ProductKind
+  title       String
+  brand       String?
+  description String?
+  imageUrl    String?
+  channels    SalesChannel[] @default([POS])
+
+  // TCG metadata
+  game            String?
+  setCode         String?
+  setName         String?
+  collectorNumber String?
+  rarity          String?
+  scryfallId      String?
+  tcgplayerId     String?
+  pokemonTcgId    String?
+
+  // Sneaker / apparel metadata
+  styleCode String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  variants  Variant[]
+
+  @@index([kind])
+  @@index([game, setCode])
+  @@index([title])
+}
+
+enum CardCondition {
+  NM
+  LP
+  MP
+  HP
+  DMG
+}
+
+enum CardFinish {
+  NONFOIL
+  FOIL
+  ETCHED
+  REVERSE_HOLO
+  HOLO
+}
+
+enum ItemCondition {
+  DS
+  VNDS
+  USED
+  DAMAGED
+}
+
+model Variant {
+  id         String  @id @default(cuid())
+  productId  String
+  product    Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sku        String  @unique
+  barcode    String? @unique
+  priceCents Int
+  costCents  Int?
+  taxable    Boolean @default(true)
+
+  condition CardCondition?
+  finish    CardFinish?
+  language  String?
+
+  size          String?
+  colorway      String?
+  itemCondition ItemCondition?
+  /// One-of-one item (e.g. a specific consigned pair); quantity never exceeds 1.
+  serialized    Boolean        @default(false)
+
+  /// Last market price pulled from a price feed.
+  marketCents    Int?
+  marketSource   String?
+  marketAt       DateTime?
+  /// Reprice automatically when the feed changes.
+  autoPrice      Boolean   @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  inventory      InventoryLevel[]
+  movements      InventoryMovement[]
+  orderLines     OrderLine[]
+  priceHistory   PricePoint[]
+  authentication Authentication[]
+  consignment    ConsignmentItem[]
+  preorder       PreorderProduct?
+  channelLinks   ChannelListing[]
+}
+
+model PricePoint {
+  id          String   @id @default(cuid())
+  variantId   String
+  variant     Variant  @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  source      String
+  marketCents Int
+  capturedAt  DateTime @default(now())
+
+  @@index([variantId, capturedAt])
+}
+
+// ─── Inventory ───────────────────────────────────────────────────
+
+model InventoryLevel {
+  variantId  String
+  variant    Variant  @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  locationId String
+  location   Location @relation(fields: [locationId], references: [id])
+  onHand     Int      @default(0)
+  /// Held for unpaid online carts / preorders.
+  reserved   Int      @default(0)
+  updatedAt  DateTime @updatedAt
+
+  @@id([variantId, locationId])
+}
+
+enum MovementReason {
+  RECEIVE
+  SALE
+  REFUND
+  BUYLIST
+  CONSIGN_IN
+  CONSIGN_OUT
+  COUNT
+  DAMAGE
+  THEFT
+  TRANSFER
+  OTHER
+}
+
+/// Append-only audit trail for every inventory change.
+model InventoryMovement {
+  id         String         @id @default(cuid())
+  variantId  String
+  variant    Variant        @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  locationId String
+  location   Location       @relation(fields: [locationId], references: [id])
+  delta      Int
+  reason     MovementReason
+  note       String?
+  orderId    String?
+  buylistId  String?
+  staffId    String?
+  staff      Staff?         @relation(fields: [staffId], references: [id])
+  createdAt  DateTime       @default(now())
+
+  @@index([variantId, createdAt])
+}
+
+// ─── Orders & payments ───────────────────────────────────────────
+
+enum OrderStatus {
+  OPEN
+  PAID
+  PARTIALLY_REFUNDED
+  REFUNDED
+  VOID
+}
+
+model Order {
+  id             String       @id @default(cuid())
+  number         Int          @unique @default(autoincrement())
+  channel        SalesChannel @default(POS)
+  /// Order id on the external channel (Shopify order id, TCGplayer order #, ...).
+  externalId     String?
+  status         OrderStatus  @default(OPEN)
+  locationId     String
+  location       Location     @relation(fields: [locationId], references: [id])
+  customerId     String?
+  customer       Customer?    @relation(fields: [customerId], references: [id])
+  staffId        String?
+  staff          Staff?       @relation(fields: [staffId], references: [id])
+  idempotencyKey String?      @unique
+  subtotalCents  Int
+  discountCents  Int
+  taxCents       Int
+  totalCents     Int
+  note           String?
+  createdAt      DateTime     @default(now())
+
+  lines    OrderLine[]
+  payments Payment[]
+
+  @@unique([channel, externalId])
+  @@index([createdAt])
+}
+
+model OrderLine {
+  id             String  @id @default(cuid())
+  orderId        String
+  order          Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variantId      String
+  variant        Variant @relation(fields: [variantId], references: [id])
+  title          String
+  quantity       Int
+  unitPriceCents Int
+  discountCents  Int     @default(0)
+  taxable        Boolean
+  refundedQty    Int     @default(0)
+  /// Set when the line sold a consigned unit.
+  consignmentItemId String?
+
+  eventRegistration EventRegistration?
+}
+
+enum PaymentStatus {
+  PENDING
+  APPROVED
+  DECLINED
+  VOIDED
+  REFUNDED
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  orderId     String?
+  order       Order?        @relation(fields: [orderId], references: [id])
+  preorderId  String?
+  preorder    Preorder?     @relation(fields: [preorderId], references: [id])
+  /// Positive = money in, negative = refund out.
+  amountCents Int
+  tender      String
+  status      PaymentStatus
+  gateway     String?
+  /// Gateway transaction id.
+  gatewayRef  String?
+  cardBrand   String?
+  cardLast4   String?
+  /// For cash: change handed back.
+  changeCents Int?
+  /// Set on refund rows: the original payment being refunded.
+  refundOfId  String?
+  raw         Json?
+  createdAt   DateTime      @default(now())
+}
+
+// ─── Buylist / trade-ins ─────────────────────────────────────────
+
+enum BuylistStatus {
+  QUOTED
+  ACCEPTED
+  REJECTED
+}
+
+enum BuylistPayout {
+  CASH
+  STORE_CREDIT
+}
+
+model BuylistTicket {
+  id               String         @id @default(cuid())
+  number           Int            @unique @default(autoincrement())
+  status           BuylistStatus  @default(QUOTED)
+  locationId       String
+  location         Location       @relation(fields: [locationId], references: [id])
+  customerId       String?
+  customer         Customer?      @relation(fields: [customerId], references: [id])
+  staffId          String?
+  staff            Staff?         @relation(fields: [staffId], references: [id])
+  payout           BuylistPayout?
+  cashTotalCents   Int
+  creditTotalCents Int
+  paidCents        Int?
+  sellerIdType     String?
+  sellerIdLast4    String?
+  createdAt        DateTime       @default(now())
+  acceptedAt       DateTime?
+
+  lines BuylistLine[]
+}
+
+model BuylistLine {
+  id               String        @id @default(cuid())
+  ticketId         String
+  ticket           BuylistTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  variantId        String?
+  description      String
+  quantity         Int
+  marketCents      Int
+  cashOfferCents   Int
+  creditOfferCents Int
+}
+
+// ─── Consignment & authentication (sneakers / streetwear) ────────
+
+model Consignor {
+  id            String   @id @default(cuid())
+  customerId    String   @unique
+  customer      Customer @relation(fields: [customerId], references: [id])
+  /// Store's cut of each sale, in bps.
+  commissionBps Int
+  createdAt     DateTime @default(now())
+
+  items   ConsignmentItem[]
+  payouts ConsignmentPayout[]
+}
+
+enum ConsignmentStatus {
+  ACTIVE
+  SOLD
+  RETURNED
+}
+
+model ConsignmentItem {
+  id          String            @id @default(cuid())
+  consignorId String
+  consignor   Consignor         @relation(fields: [consignorId], references: [id])
+  variantId   String
+  variant     Variant           @relation(fields: [variantId], references: [id])
+  locationId  String
+  location    Location          @relation(fields: [locationId], references: [id])
+  quantity    Int
+  soldQty     Int               @default(0)
+  floorCents  Int?
+  status      ConsignmentStatus @default(ACTIVE)
+  createdAt   DateTime          @default(now())
+
+  payouts ConsignmentPayout[]
+}
+
+enum PayoutStatus {
+  OWED
+  PAID
+}
+
+model ConsignmentPayout {
+  id                String          @id @default(cuid())
+  consignorId       String
+  consignor         Consignor       @relation(fields: [consignorId], references: [id])
+  consignmentItemId String
+  consignmentItem   ConsignmentItem @relation(fields: [consignmentItemId], references: [id])
+  orderLineId       String
+  saleCents         Int
+  commissionCents   Int
+  payoutCents       Int
+  status            PayoutStatus    @default(OWED)
+  paidAt            DateTime?
+  createdAt         DateTime        @default(now())
+}
+
+enum AuthResult {
+  PASS
+  FAIL
+  INCONCLUSIVE
+}
+
+model Authentication {
+  id        String     @id @default(cuid())
+  variantId String
+  variant   Variant    @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  staffId   String?
+  staff     Staff?     @relation(fields: [staffId], references: [id])
+  result    AuthResult
+  method    String
+  notes     String?
+  photoUrls String[]
+  createdAt DateTime   @default(now())
+}
+
+// ─── Events & preorders ──────────────────────────────────────────
+
+model Event {
+  id            String   @id @default(cuid())
+  locationId    String
+  location      Location @relation(fields: [locationId], references: [id])
+  name          String
+  game          String?
+  format        String?
+  startsAt      DateTime
+  capacity      Int
+  entryFeeCents Int
+  /// EVENT_ENTRY variant sold at checkout to register a player.
+  variantId     String   @unique
+  createdAt     DateTime @default(now())
+
+  registrations EventRegistration[]
+}
+
+model EventRegistration {
+  id          String     @id @default(cuid())
+  eventId     String
+  event       Event      @relation(fields: [eventId], references: [id])
+  customerId  String
+  customer    Customer   @relation(fields: [customerId], references: [id])
+  orderLineId String?    @unique
+  orderLine   OrderLine? @relation(fields: [orderLineId], references: [id])
+  checkedIn   Boolean    @default(false)
+  createdAt   DateTime   @default(now())
+
+  @@unique([eventId, customerId])
+}
+
+model PreorderProduct {
+  id               String    @id @default(cuid())
+  variantId        String    @unique
+  variant          Variant   @relation(fields: [variantId], references: [id])
+  releaseDate      DateTime
+  allocation       Int?
+  depositCents     Int
+  perCustomerLimit Int?
+  createdAt        DateTime  @default(now())
+
+  preorders Preorder[]
+}
+
+enum PreorderStatus {
+  RESERVED
+  FULFILLED
+  CANCELLED
+}
+
+model Preorder {
+  id                String          @id @default(cuid())
+  preorderProductId String
+  preorderProduct   PreorderProduct @relation(fields: [preorderProductId], references: [id])
+  customerId        String
+  customer          Customer        @relation(fields: [customerId], references: [id])
+  locationId        String
+  quantity          Int
+  depositPaidCents  Int
+  status            PreorderStatus  @default(RESERVED)
+  idempotencyKey    String          @unique
+  /// Order created when the preorder is picked up / shipped.
+  fulfilledOrderId  String?
+  createdAt         DateTime        @default(now())
+
+  payments Payment[]
+}
+
+// ─── External sales channels ─────────────────────────────────────
+
+/// Links a variant to its listing on an external channel.
+model ChannelListing {
+  id          String       @id @default(cuid())
+  variantId   String
+  variant     Variant      @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  channel     SalesChannel
+  externalId  String
+  /// Secondary id some channels need (e.g. Shopify inventory_item_id).
+  inventoryRef String?
+  /// Last quantity pushed, so sync only sends changes.
+  lastPushed  Int?
+  lastSyncAt  DateTime?
+  lastError   String?
+
+  @@unique([variantId, channel])
+  @@unique([channel, externalId])
+}
+
+model ChannelSyncCursor {
+  channel   SalesChannel @id
+  /// Opaque cursor / timestamp for incremental order pulls.
+  cursor    String?
+  updatedAt DateTime     @updatedAt
+}

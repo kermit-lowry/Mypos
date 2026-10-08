@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "MyPOS Register",
+    "slug": "mypos-register",
+    "version": "0.1.0",
+    "orientation": "landscape",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true,
+      "requireFullScreen": true,
+      "bundleIdentifier": "com.mypos.register",
+      "infoPlist": { "NSCameraUsageDescription": "Scan product barcodes and card set codes." }
+    },
+    "android": { "package": "com.mypos.register", "permissions": ["CAMERA"] },
+    "plugins": ["expo-secure-store", ["expo-camera", { "cameraPermission": "Scan product barcodes." }]]
+  }
+}
