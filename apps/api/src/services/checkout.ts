@@ -12,6 +12,7 @@ import { moveInventory } from "./inventory.js";
 import { earns, getProgram, loyaltyBalances, postLoyalty, priceRewards, unitFor } from "./loyalty.js";
 import { applyDeals } from "./promotions.js";
 import { postCredit } from "./storeCredit.js";
+import { currentSession, drawerClosed } from "./drawer.js";
 
 /** Products whose stock is not tracked as inventory. */
 const UNTRACKED: ProductKind[] = ["EVENT_ENTRY"];
@@ -42,6 +43,11 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
   // ── Validate cart ──────────────────────────────────────────
   const location = await prisma.location.findUnique({ where: { id: input.locationId } });
   if (!location) throw notFound("Location");
+
+  // Payments go into the register's open drawer session (shift), when there is
+  // one. A store can insist cash only changes hands during a shift.
+  const drawer = actor ? await currentSession(prisma, location.id, input.terminalId) : null;
+  if (!drawer && location.requireDrawerSession && input.tenders.some((t) => t.type === "CASH")) throw drawerClosed();
 
   const variantIds = [...new Set(input.lines.map((l) => l.variantId))];
   const variants = await prisma.variant.findMany({ where: { id: { in: variantIds } }, include: { product: true } });
@@ -323,13 +329,14 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
             cardBrand: card?.cardBrand,
             cardLast4: card?.cardLast4,
             changeCents: t.type === "CASH" ? (t.tenderedCents ?? t.amountCents) - t.amountCents : null,
+            drawerSessionId: drawer?.id,
           },
         });
       }
 
       if (opts.preorder) {
         await tx.payment.create({
-          data: { orderId: order.id, amountCents: deposit, tender: "PREORDER_DEPOSIT", status: "APPROVED", gatewayRef: opts.preorder.id },
+          data: { orderId: order.id, amountCents: deposit, tender: "PREORDER_DEPOSIT", status: "APPROVED", gatewayRef: opts.preorder.id, drawerSessionId: drawer?.id },
         });
         const claimed = await tx.preorder.updateMany({
           where: { id: opts.preorder.id, status: "RESERVED" },

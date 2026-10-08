@@ -55,3 +55,60 @@ export async function transferHtml(prisma: PrismaClient, id: string): Promise<st
 <tfoot><tr><td colspan="2" class="r">${t.lines.length} items</td><td class="r">${units}</td><td></td><td class="r">${formatCents(value)}</td></tr></tfoot></table>
 ${t.notes ? `<h2>Notes</h2><p>${esc(t.notes)}</p>` : ""}<div class="sign"><div>Packed by / date</div><div>Received by / date</div></div>`);
 }
+
+// ── Drawer (X / Z) report ────────────────────────────────────────
+
+import type { SessionReport } from "./drawer.js";
+
+/** Printable closing / X report for a drawer session. */
+export function drawerReportHtml(r: SessionReport): string {
+  const when = (iso: string | null) => (iso ? esc(new Date(iso).toLocaleString("en-US", { timeZone: r.session.timeZone })) : "");
+  const money = (c: number) => formatCents(c);
+  const neg = (c: number) => (c ? `-${formatCents(c)}` : formatCents(0));
+  const row = (label: string, value: string, cls = "") => `<tr class="${cls}"><td>${esc(label)}</td><td class="r">${value}</td></tr>`;
+  const { cash, sales } = r;
+  const variance = cash.varianceCents ?? 0;
+  const title = `${r.kind === "Z" ? "Closing" : "X"} report · Drawer #${r.session.number}`;
+
+  const cashRows = [
+    row("Opening float", money(cash.openingFloatCents)),
+    row("Cash sales", money(cash.cashSalesCents)),
+    row("Cash refunds", neg(cash.cashRefundsCents)),
+    row("Trade-ins paid in cash", neg(cash.tradeInCashCents)),
+    row("Paid in", money(cash.paidInCents)),
+    row("Paid out", neg(cash.paidOutCents)),
+    row("Drops to safe", neg(cash.dropCents)),
+  ].join("");
+  const countRows =
+    cash.countedCashCents === null
+      ? ""
+      : `<tr><td>Counted</td><td class="r">${money(cash.countedCashCents)}</td></tr><tr><td>Variance${variance < 0 ? " (short)" : variance > 0 ? " (over)" : ""}</td><td class="r">${variance < 0 ? `-${money(-variance)}` : money(variance)}</td></tr>${r.session.approvedBy ? `<tr><td colspan="2">Variance approved by ${esc(r.session.approvedBy)}</td></tr>` : ""}`;
+  const tenders = sales.byTender.map((t) => `<tr><td>${esc(t.tender)}</td><td class="r">${t.count}</td><td class="r">${money(t.amountCents)}</td></tr>`).join("") || `<tr><td colspan="3">No sales</td></tr>`;
+  const refunds = sales.refunds.byTender.map((t) => `<tr><td>${esc(t.tender)}</td><td class="r">${t.count}</td><td class="r">${neg(t.amountCents)}</td></tr>`).join("");
+  const movements = r.movements
+    .map((m) => `<tr><td>${when(m.createdAt)}</td><td>${esc(m.kind.replace("_", " ").toLowerCase())}</td><td>${esc(m.reason)}${m.note ? ` <span style="color:#555">— ${esc(m.note)}</span>` : ""}</td><td>${esc(m.staff ?? "")}</td><td class="r">${m.kind === "PAID_IN" ? money(m.amountCents) : `-${money(m.amountCents)}`}</td></tr>`)
+    .join("");
+  const employees = r.byEmployee.map((e) => `<tr><td>${esc(e.name)}</td><td class="r">${e.orders}</td><td class="r">${money(e.netCents)}</td><td class="r">${money(e.collectedCents)}</td></tr>`).join("");
+  const count = (c: Record<string, number> | null) =>
+    c
+      ? `<table><thead><tr><th>Denomination</th><th class="r">Count</th><th class="r">Amount</th></tr></thead><tbody>${Object.entries(c)
+          .sort((a, b) => Number(b[0]) - Number(a[0]))
+          .map(([d, n]) => `<tr><td>${money(Number(d))}</td><td class="r">${n}</td><td class="r">${money(Number(d) * n)}</td></tr>`)
+          .join("")}</tbody></table>`
+      : "";
+
+  return page(
+    title,
+    `<h1>${esc(title)}</h1><div>${esc(r.session.locationName)}${r.session.terminalName ? ` · ${esc(r.session.terminalName)}` : ""}</div>
+<div class="meta"><div><b>Opened</b> ${when(r.session.openedAt)}${r.session.openedBy ? ` by ${esc(r.session.openedBy)}` : ""}</div><div><b>${r.session.closedAt ? "Closed" : "Printed"}</b> ${when(r.session.closedAt ?? r.generatedAt)}${r.session.closedBy ? ` by ${esc(r.session.closedBy)}` : ""}</div></div>
+<h2>Cash</h2><table><tbody>${cashRows}</tbody><tfoot><tr><td>Expected</td><td class="r">${money(cash.expectedCents)}</td></tr>${countRows}</tfoot></table>
+<h2>Sales</h2><table><tbody>${row("Orders / units", `${sales.orders} / ${sales.units}`)}${row("Gross", money(sales.grossCents))}${row("Discounts", neg(sales.discountCents))}${row("Net sales", money(sales.netSalesCents))}${row("Tax", money(sales.taxCents))}${sales.cardAdjustmentCents ? row("Card price adjustment", money(sales.cardAdjustmentCents)) : ""}${row(`Refunds (${sales.refunds.count})`, neg(sales.refunds.amountCents))}</tbody><tfoot><tr><td>Collected</td><td class="r">${money(sales.collectedCents)}</td></tr></tfoot></table>
+<h2>Tenders</h2><table><thead><tr><th>Tender</th><th class="r">Count</th><th class="r">Amount</th></tr></thead><tbody>${tenders}</tbody></table>
+${refunds ? `<h2>Refunds by tender</h2><table><thead><tr><th>Tender</th><th class="r">Count</th><th class="r">Amount</th></tr></thead><tbody>${refunds}</tbody></table>` : ""}
+<h2>Trade-ins</h2><table><thead><tr><th>Payout</th><th class="r">Tickets</th><th class="r">Paid</th></tr></thead><tbody><tr><td>Cash</td><td class="r">${sales.tradeIns.byPayout.CASH.tickets}</td><td class="r">${money(sales.tradeIns.byPayout.CASH.paidCents)}</td></tr><tr><td>Store credit</td><td class="r">${sales.tradeIns.byPayout.STORE_CREDIT.tickets}</td><td class="r">${money(sales.tradeIns.byPayout.STORE_CREDIT.paidCents)}</td></tr></tbody></table>
+${movements ? `<h2>Paid in / out</h2><table><thead><tr><th>When</th><th>Kind</th><th>Reason</th><th>By</th><th class="r">Amount</th></tr></thead><tbody>${movements}</tbody></table>` : ""}
+${employees ? `<h2>By employee</h2><table><thead><tr><th>Employee</th><th class="r">Orders</th><th class="r">Net sales</th><th class="r">Collected</th></tr></thead><tbody>${employees}</tbody></table>` : ""}
+${cash.openingCount ? `<h2>Opening count</h2>${count(cash.openingCount)}` : ""}${cash.closingCount ? `<h2>Closing count</h2>${count(cash.closingCount)}` : ""}
+${r.session.notes ? `<h2>Notes</h2><p>${esc(r.session.notes)}</p>` : ""}<div class="sign"><div>Counted by / date</div><div>Reviewed by / date</div></div>`,
+  );
+}

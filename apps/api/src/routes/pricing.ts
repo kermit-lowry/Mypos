@@ -30,6 +30,10 @@ export function pricingRoutes(app: FastifyInstance, base: Ctx) {
         labelPrinterHost: z.string().max(255).nullable().optional(),
         receiptHeader: z.string().max(500).nullable().optional(),
         receiptFooter: z.string().max(500).nullable().optional(),
+        /** Cash drawer sessions (shifts): cash only during a shift, blind closing counts, and the variance that needs a manager. */
+        requireDrawerSession: z.boolean().optional(),
+        blindCashCount: z.boolean().optional(),
+        cashVarianceAlertCents: z.number().int().min(0).max(100_000).optional(),
       }),
       req.body,
     );

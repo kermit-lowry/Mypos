@@ -5,6 +5,7 @@ import { badRequest, conflict, notFound } from "../errors.js";
 import { marketTrends } from "../pricing/trends.js";
 import { describeVariant } from "./checkout.js";
 import type { Ctx } from "./context.js";
+import { currentSession, drawerClosed } from "./drawer.js";
 import { moveInventory, receiveCost } from "./inventory.js";
 import { categoryLineage } from "./promotions.js";
 import { postCredit } from "./storeCredit.js";
@@ -187,6 +188,14 @@ export async function acceptBuylist(ctx: Ctx, ticketId: string, input: BuylistAc
     const customerId = input.customerId ?? ticket.customerId ?? undefined;
     if (input.payout === "STORE_CREDIT" && !customerId) throw badRequest("CUSTOMER_REQUIRED", "Store credit payouts need a customer");
 
+    // The payout is attributed to the register's open drawer session (shift);
+    // cash must come out of one when the store insists.
+    const drawer = await currentSession(tx, ticket.locationId, input.terminalId);
+    if (input.payout === "CASH" && !drawer) {
+      const location = await tx.location.findUniqueOrThrow({ where: { id: ticket.locationId } });
+      if (location.requireDrawerSession) throw drawerClosed();
+    }
+
     const paid = input.payout === "CASH" ? ticket.cashTotalCents : ticket.creditTotalCents;
     if (input.payout === "STORE_CREDIT") {
       await postCredit(tx, { customerId: customerId!, amountCents: paid, reason: `Buylist #${ticket.number}`, buylistId: ticket.id });
@@ -215,6 +224,7 @@ export async function acceptBuylist(ctx: Ctx, ticketId: string, input: BuylistAc
         customerId,
         sellerIdType: input.sellerIdType,
         sellerIdLast4: input.sellerIdLast4,
+        drawerSessionId: drawer?.id,
         acceptedAt: new Date(),
       },
       include: { lines: true },

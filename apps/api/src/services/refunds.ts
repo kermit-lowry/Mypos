@@ -3,6 +3,7 @@ import { cardPrice, roundHalfUp, type RefundInput } from "@mypos/shared";
 import { badRequest, conflict, notFound } from "../errors.js";
 import type { Ctx } from "./context.js";
 import { followUpTerminal } from "./charges.js";
+import { currentSession, drawerClosed } from "./drawer.js";
 import { moveInventory } from "./inventory.js";
 import { postLoyalty } from "./loyalty.js";
 import { postCredit } from "./storeCredit.js";
@@ -27,16 +28,18 @@ export async function refundOrder(ctx: Ctx, input: RefundInput): Promise<RefundR
 
   // Everything except card refunds happens in one transaction that also claims
   // the refunded quantities, so the same items can never be refunded twice.
-  const { refundCents, cardLegs, legs, orderId, locationId } = await prisma.$transaction(async (tx) => {
+  const { refundCents, cardLegs, legs, orderId, locationId, drawerSessionId } = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${input.orderId} FOR UPDATE`;
     const order = await tx.order.findUnique({
       where: { id: input.orderId },
-      include: { lines: { include: { variant: { include: { product: true } } } }, payments: true },
+      include: { lines: { include: { variant: { include: { product: true } } } }, payments: true, location: true },
     });
     if (!order) throw notFound("Order");
     if (order.status !== "PAID" && order.status !== "PARTIALLY_REFUNDED") {
       throw conflict("NOT_REFUNDABLE", `Order is ${order.status}`);
     }
+    // Refund money comes out of the register's open drawer session, when there is one.
+    const drawer = await currentSession(tx, order.locationId, input.terminalId);
     if (input.toStoreCredit && !order.customerId) throw badRequest("CUSTOMER_REQUIRED", "Store credit refunds need a customer");
 
     // Dual pricing: a sale paid entirely by card is refunded at card prices, so
@@ -128,7 +131,7 @@ export async function refundOrder(ctx: Ctx, input: RefundInput): Promise<RefundR
     const cardLegs: { payment: Payment; amountCents: number }[] = [];
     if (input.toStoreCredit) {
       await postCredit(tx, { customerId: order.customerId!, amountCents: total, reason: "Refund", orderId: order.id });
-      await tx.payment.create({ data: { orderId: order.id, amountCents: -total, tender: "STORE_CREDIT", status: "APPROVED" } });
+      await tx.payment.create({ data: { orderId: order.id, amountCents: -total, tender: "STORE_CREDIT", status: "APPROVED", drawerSessionId: drawer?.id } });
       legs.push({ tender: "STORE_CREDIT", amountCents: total, status: "APPROVED" });
     } else {
       let left = total;
@@ -145,6 +148,7 @@ export async function refundOrder(ctx: Ctx, input: RefundInput): Promise<RefundR
           cardLegs.push({ payment: p, amountCents: take });
           continue;
         }
+        if (p.tender === "CASH" && !drawer && order.location.requireDrawerSession) throw drawerClosed();
         if (p.tender === "STORE_CREDIT" || p.tender === "PREORDER_DEPOSIT") {
           await postCredit(tx, { customerId: order.customerId!, amountCents: take, reason: "Refund", orderId: order.id });
         }
@@ -155,7 +159,7 @@ export async function refundOrder(ctx: Ctx, input: RefundInput): Promise<RefundR
           await tx.giftCard.update({ where: { code: p.gatewayRef }, data: { balanceCents: { increment: take } } });
         }
         await tx.payment.create({
-          data: { orderId: order.id, amountCents: -take, tender: p.tender, status: "APPROVED", refundOfId: p.id },
+          data: { orderId: order.id, amountCents: -take, tender: p.tender, status: "APPROVED", refundOfId: p.id, drawerSessionId: drawer?.id },
         });
         legs.push({ tender: p.tender, amountCents: take, status: "APPROVED" });
       }
@@ -190,7 +194,7 @@ export async function refundOrder(ctx: Ctx, input: RefundInput): Promise<RefundR
     }
     await tx.order.update({ where: { id: order.id }, data: { status: fully ? "REFUNDED" : "PARTIALLY_REFUNDED" } });
 
-    return { refundCents: total, cardLegs, legs, orderId: order.id, locationId: order.locationId };
+    return { refundCents: total, cardLegs, legs, orderId: order.id, locationId: order.locationId, drawerSessionId: drawer?.id };
   });
 
   // Card refunds go to the processor after the claim commits. A failure is
@@ -225,6 +229,7 @@ export async function refundOrder(ctx: Ctx, input: RefundInput): Promise<RefundR
         gatewayRef: ref ?? payment.gatewayRef,
         cardLast4: payment.cardLast4,
         terminalId,
+        drawerSessionId,
         refundOfId: payment.id,
         raw: message ? { message } : undefined,
       },

@@ -365,3 +365,25 @@ export async function transferReport(db: Db, r: Range) {
   const total = list.reduce((a, e) => ({ qtySent: a.qtySent + e.qtySent, qtyReceived: a.qtyReceived + e.qtyReceived, costSentCents: a.costSentCents + e.costSentCents, costReceivedCents: a.costReceivedCents + e.costReceivedCents, priceSentCents: a.priceSentCents + e.priceSentCents, priceReceivedCents: a.priceReceivedCents + e.priceReceivedCents }), { qtySent: 0, qtyReceived: 0, costSentCents: 0, costReceivedCents: 0, priceSentCents: 0, priceReceivedCents: 0 });
   return { transfers: transfers.length, rows: list, total };
 }
+
+/**
+ * The instants a calendar day starts and ends in a time zone ("2026-10-08" in
+ * America/New_York → 04:00Z that day until 04:00Z the next). DST-aware.
+ */
+export function localDayRange(date: string, timeZone: string): { from: Date; to: Date } {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!m) throw new Error("Date must be YYYY-MM-DD");
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const midnight = (dayOffset: number): Date => {
+    const wanted = Date.UTC(y, mo - 1, d + dayOffset);
+    let guess = wanted;
+    // Read the guess back as wall-clock time in the zone and correct by the difference (twice for DST edges).
+    for (let i = 0; i < 2; i++) {
+      const local = new Date(new Date(guess).toLocaleString("en-US", { timeZone }));
+      const asUtc = Date.UTC(local.getFullYear(), local.getMonth(), local.getDate(), local.getHours(), local.getMinutes(), local.getSeconds());
+      guess += wanted - asUtc;
+    }
+    return new Date(guess);
+  };
+  return { from: midnight(0), to: midnight(1) };
+}
