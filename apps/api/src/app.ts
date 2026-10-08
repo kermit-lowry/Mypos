@@ -14,6 +14,8 @@ import { pricingRoutes } from "./routes/pricing.js";
 import { purchasingRoutes } from "./routes/purchasing.js";
 import { reportRoutes } from "./routes/reports.js";
 import { salesRoutes } from "./routes/sales.js";
+import { shiftRoutes } from "./routes/shifts.js";
+import { timeClockRoutes } from "./routes/timeclock.js";
 import { staffRoutes } from "./routes/staff.js";
 import { storefrontRoutes } from "./routes/storefront.js";
 import { terminalRoutes } from "./routes/terminals.js";
@@ -64,6 +66,8 @@ export async function buildApp(deps: { prisma: PrismaClient; gateway: PaymentGat
   loyaltyRoutes(app, ctx);
   terminalRoutes(app, ctx);
   pricingRoutes(app, ctx);
+  shiftRoutes(app, ctx);
+  timeClockRoutes(app, ctx);
   dealRoutes(app, ctx);
   purchasingRoutes(app, ctx);
   reportRoutes(app, ctx);

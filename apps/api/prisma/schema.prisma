@@ -32,6 +32,15 @@ model Location {
   address    String?
   phone      String?
 
+  /// Cash must go into an open drawer session (shift); off = cash sales work without one.
+  requireDrawerSession Boolean @default(false)
+  /// Closing count is blind: the expected amount is hidden until the count is entered.
+  blindCashCount Boolean @default(true)
+  /// A closing variance beyond this needs a manager's approval (cents).
+  cashVarianceAlertCents Int @default(500)
+
+  drawerSessions DrawerSession[]
+  timeEntries    TimeEntry[]
   inventory   InventoryLevel[]
   movements   InventoryMovement[]
   orders      Order[]
@@ -67,6 +76,10 @@ model Staff {
   buylists  BuylistTicket[]
   movements InventoryMovement[]
   auths     Authentication[]
+  drawersOpened DrawerSession[] @relation("DrawerOpenedBy")
+  drawersClosed DrawerSession[] @relation("DrawerClosedBy")
+  cashMovements CashMovement[]
+  timeEntries   TimeEntry[]
 }
 
 enum StaffRole {
@@ -612,6 +625,9 @@ model Payment {
   changeCents Int?
   /// Card-present terminal the payment ran on.
   terminalId  String?
+  /// Cash drawer session (shift) this payment's cash went into or came out of.
+  drawerSessionId String?
+  drawerSession   DrawerSession? @relation(fields: [drawerSessionId], references: [id])
   /// Set on refund rows: the original payment being refunded.
   refundOfId  String?
   raw         Json?
@@ -647,6 +663,9 @@ model BuylistTicket {
   paidCents        Int?
   sellerIdType     String?
   sellerIdLast4    String?
+  /// Drawer session a cash payout came out of.
+  drawerSessionId  String?
+  drawerSession    DrawerSession? @relation(fields: [drawerSessionId], references: [id])
   createdAt        DateTime       @default(now())
   acceptedAt       DateTime?
 
@@ -1085,4 +1104,98 @@ model BuylistPolicy {
   updatedAt       DateTime     @updatedAt
 
   @@unique([kind, categoryId])
+}
+
+// ─── Cash drawer sessions (shifts) and the time clock ────────────
+
+enum DrawerSessionStatus {
+  OPEN
+  CLOSED
+}
+
+/// One cash drawer from "start shift" (float counted in) to "close" (blind
+/// count, variance, closing report). Belongs to a register (its terminal) or,
+/// with no terminal, to the location's single drawer.
+model DrawerSession {
+  id         String              @id @default(cuid())
+  number     Int                 @unique @default(autoincrement())
+  status     DrawerSessionStatus @default(OPEN)
+  locationId String
+  location   Location            @relation(fields: [locationId], references: [id])
+  /// The register this drawer belongs to; null = the location's only drawer.
+  terminalId String?
+  openedById String?
+  openedBy   Staff?              @relation("DrawerOpenedBy", fields: [openedById], references: [id])
+  openedAt   DateTime            @default(now())
+  /// Starting cash counted in.
+  openingFloatCents Int          @default(0)
+  /// Denomination counts at open, e.g. { "2000": 5, "100": 20, "25": 40 } (cents → count).
+  openingCount Json?
+  closedById String?
+  closedBy   Staff?              @relation("DrawerClosedBy", fields: [closedById], references: [id])
+  closedAt   DateTime?
+  /// Set at close.
+  expectedCashCents Int?
+  countedCashCents  Int?
+  /// counted − expected (negative = short).
+  varianceCents     Int?
+  closingCount      Json?
+  /// Manager who accepted a variance beyond the alert amount.
+  approvedById      String?
+  /// Snapshot of the closing (Z) report: sales, tenders, cash in/out, by employee.
+  closingReport     Json?
+  notes             String?
+
+  payments  Payment[]
+  buylists  BuylistTicket[]
+  movements CashMovement[]
+
+  @@index([locationId, status])
+  @@index([terminalId, status])
+  @@index([openedAt])
+}
+
+enum CashMovementKind {
+  PAID_IN
+  PAID_OUT
+  DROP
+}
+
+/// Cash put in or taken out of a drawer besides sales: petty cash, a safe drop, change from the bank.
+model CashMovement {
+  id          String           @id @default(cuid())
+  sessionId   String
+  session     DrawerSession    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  kind        CashMovementKind
+  /// Always positive; the kind says which way it went.
+  amountCents Int
+  reason      String
+  note        String?
+  staffId     String?
+  staff       Staff?           @relation(fields: [staffId], references: [id])
+  approverId  String?
+  createdAt   DateTime         @default(now())
+
+  @@index([sessionId])
+}
+
+/// Time clock: one row per clock-in, closed by the clock-out.
+model TimeEntry {
+  id           String    @id @default(cuid())
+  staffId      String
+  staff        Staff     @relation(fields: [staffId], references: [id])
+  locationId   String
+  location     Location  @relation(fields: [locationId], references: [id])
+  clockIn      DateTime  @default(now())
+  clockOut     DateTime?
+  breakMinutes Int       @default(0)
+  note         String?
+  /// "register" (PIN at the register), "web", or "edited" when a manager changed it.
+  source       String    @default("register")
+  editedById   String?
+  editedAt     DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([staffId, clockIn])
+  @@index([locationId, clockIn])
 }

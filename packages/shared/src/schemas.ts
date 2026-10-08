@@ -122,6 +122,8 @@ export const CheckoutInput = z.object({
   note: z.string().optional(),
   /** Points rewards to redeem on this sale (POINTS programs). */
   rewardIds: z.array(id).max(10).default([]),
+  /** The register (its card terminal), so cash goes into that register's open drawer session. */
+  terminalId: id.optional(),
 });
 export type CheckoutInput = z.infer<typeof CheckoutInput>;
 
@@ -162,6 +164,8 @@ export const BuylistAcceptInput = z.object({
   /** Seller ID verification captured at the counter (required in many jurisdictions). */
   sellerIdType: z.string().optional(),
   sellerIdLast4: z.string().max(4).optional(),
+  /** The register paying out, so a cash payout comes out of its open drawer session. */
+  terminalId: id.optional(),
 });
 export type BuylistAcceptInput = z.infer<typeof BuylistAcceptInput>;
 
