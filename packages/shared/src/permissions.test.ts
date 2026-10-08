@@ -30,3 +30,15 @@ it("discountBps rounds up so a limit can't be beaten by a fraction", () => {
   expect(discountBps(101, 1000)).toBe(1010);
   expect(discountBps(1, 3)).toBe(3334);
 });
+
+describe("PIN-capable permissions", () => {
+  it("treats PIN on a page or sign-in permission as not allowed", async () => {
+    const { effectivePermissions, canUsePin, PIN_PERMISSIONS } = await import("./permissions.js");
+    expect(canUsePin("DISCOUNT_LINE")).toBe(true);
+    expect(canUsePin("VIEW_REPORTS")).toBe(false);
+    expect(PIN_PERMISSIONS).not.toContain("BACK_OFFICE_LOGIN");
+    expect(effectivePermissions("MANAGER", null, { overrides: { VIEW_REPORTS: "PIN" } }).levels.VIEW_REPORTS).toBe("DENY");
+    expect(effectivePermissions("CASHIER", { permissions: { BACK_OFFICE_LOGIN: "PIN" }, discountMaxBps: 1000 }).levels.BACK_OFFICE_LOGIN).toBe("DENY");
+    expect(effectivePermissions("CASHIER", null, { overrides: { REFUND: "PIN" } }).levels.REFUND).toBe("PIN");
+  });
+});

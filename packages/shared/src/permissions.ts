@@ -29,29 +29,37 @@ export const PERMISSIONS = {
   ADJUST_BALANCES: { group: "Money", label: "Adjust store credit and rewards balances" },
   GIFT_CARD_ISSUE: { group: "Money", label: "Issue gift cards" },
   RESOLVE_PAYMENTS: { group: "Money", label: "Resolve uncertain card payments" },
-  VIEW_REPORTS: { group: "Money", label: "View sales reports" },
+  VIEW_REPORTS: { group: "Money", label: "View sales reports", pin: false },
   // Back office
   MANAGE_CATALOG: { group: "Back office", label: "Add and edit products and prices" },
   INVENTORY_ADJUST: { group: "Back office", label: "Adjust inventory counts" },
-  MANAGE_DEALS: { group: "Back office", label: "Create and edit deals and categories" },
+  MANAGE_DEALS: { group: "Back office", label: "Create and edit deals and categories", pin: false },
   MANAGE_PURCHASING: { group: "Back office", label: "Vendors and purchase orders" },
   RECEIVE_STOCK: { group: "Back office", label: "Receive purchase orders and transfers" },
   MANAGE_TRANSFERS: { group: "Back office", label: "Create and send transfers between locations" },
   MANAGE_CUSTOMERS: { group: "Back office", label: "Edit customers" },
-  BACK_OFFICE_LOGIN: { group: "Back office", label: "Sign in to the back-office website" },
+  BACK_OFFICE_LOGIN: { group: "Back office", label: "Sign in to the back-office website", pin: false },
   MANAGE_EVENTS: { group: "Back office", label: "Create events" },
   MANAGE_CONSIGNMENT: { group: "Back office", label: "Take in and return consignment" },
   CONSIGNOR_SETTLE: { group: "Back office", label: "Pay consignors" },
-  MANAGE_TERMINALS: { group: "Back office", label: "Set up card terminals and printers" },
-  MANAGE_CHANNELS: { group: "Back office", label: "Online channel listings and sync" },
-  MANAGE_BUYLIST: { group: "Owner", label: "Trade-in offer settings (margins, trend rules)" },
-  MANAGE_LOYALTY: { group: "Owner", label: "Loyalty program settings" },
-  MANAGE_SETTINGS: { group: "Owner", label: "Store settings (tax, dual pricing, receipts)" },
-  MANAGE_STAFF: { group: "Owner", label: "Employees, PINs, and permissions" },
-} as const satisfies Record<string, { group: string; label: string; detail?: string }>;
+  MANAGE_TERMINALS: { group: "Back office", label: "Set up card terminals and printers", pin: false },
+  MANAGE_CHANNELS: { group: "Back office", label: "Online channel listings and sync", pin: false },
+  MANAGE_BUYLIST: { group: "Owner", label: "Trade-in offer settings (margins, trend rules)", pin: false },
+  MANAGE_LOYALTY: { group: "Owner", label: "Loyalty program settings", pin: false },
+  MANAGE_SETTINGS: { group: "Owner", label: "Store settings (tax, dual pricing, receipts)", pin: false },
+  MANAGE_STAFF: { group: "Owner", label: "Employees, PINs, and permissions", pin: false },
+} as const satisfies Record<string, { group: string; label: string; detail?: string; pin?: false }>;
 
 export type Permission = keyof typeof PERMISSIONS;
 export const PermissionKeys = Object.keys(PERMISSIONS) as Permission[];
+
+/**
+ * Permissions a manager can approve with a PIN at the moment of use. The
+ * others gate whole pages or sign-in, where nobody is there to enter a PIN,
+ * so they are only ever Allowed or Not allowed.
+ */
+export const canUsePin = (p: Permission): boolean => (PERMISSIONS[p] as { pin?: false }).pin !== false;
+export const PIN_PERMISSIONS = PermissionKeys.filter(canUsePin);
 
 type Matrix = Record<Exclude<StaffRole, "OWNER">, Record<Permission, PermissionLevel>>;
 
@@ -152,8 +160,14 @@ export function effectivePermissions(
   }
   // Only known permissions with valid levels from stored settings count; a bad
   // value falls back to the layer beneath it rather than disappearing.
+  // A PIN level on a page/sign-in permission means "not allowed": there is no
+  // PIN prompt on those, so it must never read as allowed.
   const valid = (layer: object | null | undefined) =>
-    Object.fromEntries(Object.entries(layer ?? {}).filter(([k, v]) => k in PERMISSIONS && PermissionLevels.includes(v as PermissionLevel)));
+    Object.fromEntries(
+      Object.entries(layer ?? {})
+        .filter(([k, v]) => k in PERMISSIONS && PermissionLevels.includes(v as PermissionLevel))
+        .map(([k, v]) => [k, v === "PIN" && !canUsePin(k as Permission) ? "DENY" : v]),
+    );
   const levels: Record<Permission, PermissionLevel> = { ...DEFAULT_ROLE_PERMISSIONS[role], ...valid(rolePolicy?.permissions), ...valid(staff.overrides) };
   return { levels, discountMaxBps: staff.discountMaxBps ?? rolePolicy?.discountMaxBps ?? DEFAULT_DISCOUNT_LIMIT_BPS[role] };
 }
