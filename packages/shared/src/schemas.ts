@@ -111,6 +111,18 @@ export const TenderInput = z.object({
 });
 export type TenderInput = z.infer<typeof TenderInput>;
 
+export const ShippingAddress = z.object({
+  name: z.string().min(1).max(120),
+  line1: z.string().min(1).max(200),
+  line2: z.string().max(200).optional(),
+  city: z.string().min(1).max(100),
+  state: z.string().max(60).optional(),
+  postalCode: z.string().min(1).max(20),
+  country: z.string().min(2).max(60).default("US"),
+  phone: z.string().max(40).optional(),
+});
+export type ShippingAddress = z.infer<typeof ShippingAddress>;
+
 export const CheckoutInput = z.object({
   locationId: id,
   channel: z.enum(SalesChannels).default("POS"),
@@ -124,6 +136,12 @@ export const CheckoutInput = z.object({
   rewardIds: z.array(id).max(10).default([]),
   /** The register (its card terminal), so cash goes into that register's open drawer session. */
   terminalId: id.optional(),
+  /** Online orders: pickup or shipping, the address, shipping charged (not taxed), and the customer's note. */
+  fulfillment: z.enum(["PICKUP", "SHIP"]).optional(),
+  shippingCents: z.number().int().nonnegative().optional(),
+  shippingAddress: ShippingAddress.optional(),
+  customerPhone: z.string().max(40).optional(),
+  customerNote: z.string().max(500).optional(),
 });
 export type CheckoutInput = z.infer<typeof CheckoutInput>;
 

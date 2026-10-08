@@ -9,6 +9,7 @@ import { adminRoutes } from "./routes/admin.js";
 import { defaultCardSources, type CardSource } from "./pricing/cardSources.js";
 import { catalogRoutes } from "./routes/catalog.js";
 import { dealRoutes } from "./routes/deals.js";
+import { fulfillmentRoutes } from "./routes/fulfillment.js";
 import { layawayRoutes } from "./routes/layaway.js";
 import { loyaltyRoutes } from "./routes/loyalty.js";
 import { pricingRoutes } from "./routes/pricing.js";
@@ -70,6 +71,7 @@ export async function buildApp(deps: { prisma: PrismaClient; gateway: PaymentGat
   shiftRoutes(app, ctx);
   timeClockRoutes(app, ctx);
   layawayRoutes(app, ctx);
+  fulfillmentRoutes(app, ctx);
   dealRoutes(app, ctx);
   purchasingRoutes(app, ctx);
   reportRoutes(app, ctx);

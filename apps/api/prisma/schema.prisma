@@ -39,6 +39,15 @@ model Location {
   /// A closing variance beyond this needs a manager's approval (cents).
   cashVarianceAlertCents Int @default(500)
 
+  // Online orders
+  onlinePickupEnabled   Boolean @default(true)
+  onlineShippingEnabled Boolean @default(true)
+  /// Flat shipping charged on web orders; free above the threshold when set.
+  onlineShippingFlatCents      Int  @default(0)
+  onlineFreeShippingOverCents  Int?
+  /// Shown to the customer when they choose pickup.
+  pickupInstructions    String?
+
   // Layaway terms
   layawayEnabled        Boolean @default(true)
   /// Minimum deposit as bps of the layaway total (2000 = 20%).
@@ -574,11 +583,48 @@ model Order {
   appliedPromotions Json       @default("[]")
   createdAt      DateTime     @default(now())
 
+  // Online orders: how the customer gets it and where it is in the queue.
+  fulfillment       FulfillmentMethod?
+  fulfillmentStatus FulfillmentStatus?
+  /// Shipping charged on top of the items (not taxed); included in totalCents.
+  shippingCents     Int        @default(0)
+  /// { name, line1, line2, city, state, postalCode, country, phone }
+  shippingAddress   Json?
+  customerPhone     String?
+  /// The customer's note at checkout (pickup time, gift, etc.).
+  customerNote      String?
+  carrier           String?
+  trackingNumber    String?
+  /// Order line ids ticked off as set aside.
+  pickedLineIds     Json       @default("[]")
+  acknowledgedAt    DateTime?
+  readyAt           DateTime?
+  shippedAt         DateTime?
+  pickedUpAt        DateTime?
+  fulfilledById     String?
+
   lines    OrderLine[]
   payments Payment[]
 
   @@unique([channel, externalId])
   @@index([createdAt])
+  @@index([locationId, fulfillmentStatus])
+}
+
+enum FulfillmentMethod {
+  PICKUP
+  SHIP
+}
+
+/// NEW → ACKNOWLEDGED → PICKING → READY → PICKED_UP | SHIPPED. PROBLEM parks an order that can't be filled.
+enum FulfillmentStatus {
+  NEW
+  ACKNOWLEDGED
+  PICKING
+  READY
+  SHIPPED
+  PICKED_UP
+  PROBLEM
 }
 
 model OrderLine {
