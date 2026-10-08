@@ -1,4 +1,4 @@
-import type { PrismaClient, SalesChannel } from "@prisma/client";
+import type { Prisma, PrismaClient, SalesChannel } from "@prisma/client";
 import type { ChannelAdapter, ExternalOrder } from "./adapter.js";
 import { moveInventory } from "../services/inventory.js";
 import { describeVariant } from "../services/checkout.js";
@@ -56,8 +56,8 @@ export async function importOrder(prisma: PrismaClient, channel: SalesChannel, l
     const customer = ext.customerEmail
       ? await tx.customer.upsert({
           where: { email: ext.customerEmail },
-          create: { email: ext.customerEmail, name: ext.customerName ?? ext.customerEmail },
-          update: {},
+          create: { email: ext.customerEmail, name: ext.customerName ?? ext.customerEmail, phone: ext.customerPhone },
+          update: ext.customerPhone ? { phone: ext.customerPhone } : {},
         })
       : null;
     const order = await tx.order.create({
@@ -73,6 +73,12 @@ export async function importOrder(prisma: PrismaClient, channel: SalesChannel, l
         totalCents: ext.totalCents,
         createdAt: ext.createdAt,
         note: unmatched.length ? `Unmatched listings: ${unmatched.join(", ")}` : undefined,
+        // Into the fulfillment queue: outside channels ship unless told otherwise.
+        fulfillment: ext.fulfillment ?? "SHIP",
+        fulfillmentStatus: "NEW",
+        shippingCents: ext.shippingCents ?? 0,
+        shippingAddress: ext.shippingAddress ? (ext.shippingAddress as Prisma.InputJsonObject) : undefined,
+        customerPhone: ext.customerPhone,
       },
     });
     for (const l of matched) {

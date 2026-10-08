@@ -14,6 +14,8 @@ export interface Receipt {
   subtotalCents: number;
   discountCents: number;
   taxCents: number;
+  /** Online orders: shipping charged on top (not taxed, no card markup); part of totalCents. */
+  shippingCents: number;
   totalCents: number;
   /** Shown whenever dual pricing was on for the sale. */
   dualPricing: null | {
@@ -76,6 +78,7 @@ export async function buildReceipt(prisma: PrismaClient, orderId: string): Promi
     cashier: order.staff?.name ?? null,
     customer: order.customer?.name ?? null,
     pricedAt: allCard ? "CARD" : "CASH",
+    shippingCents: order.shippingCents,
     lines: order.lines.map((l) => {
       const unit = price(l.unitPriceCents);
       const disc = l.discountCents ? price(l.discountCents) : 0;
@@ -134,6 +137,7 @@ export function receiptText(r: Receipt, width = 42): string {
   if (r.discountCents) out.push(pad("Discounts", `-${formatCents(r.discountCents)}`, width));
   for (const p of r.promotions) out.push(pad(`  ${p.name}`, `-${formatCents(p.discountCents)}`, width));
   out.push(pad("Tax", formatCents(r.taxCents), width));
+  if (r.shippingCents) out.push(pad("Shipping", formatCents(r.shippingCents), width));
   if (r.dualPricing?.cardAdjustmentCents) out.push(pad(`Card price adj. (${r.dualPricing.percent})`, formatCents(r.dualPricing.cardAdjustmentCents), width));
   out.push(pad(r.pricedAt === "CARD" ? "TOTAL (card price)" : "TOTAL", formatCents(r.totalCents + (r.dualPricing?.cardAdjustmentCents ?? 0)), width));
   if (r.dualPricing) {
@@ -182,7 +186,7 @@ ${r.cashier || r.customer ? `<p class="c">${esc([r.cashier && `Cashier: ${r.cash
     .join("")}
 ${row("Subtotal", formatCents(r.subtotalCents), "t")}${r.discountCents ? row("Discounts", `−${formatCents(r.discountCents)}`) : ""}
 ${r.promotions.map((p) => row(p.name, `−${formatCents(p.discountCents)}`, "m")).join("")}
-${row("Tax", formatCents(r.taxCents))}${r.dualPricing?.cardAdjustmentCents ? row(`Card price adjustment (${r.dualPricing.percent})`, formatCents(r.dualPricing.cardAdjustmentCents)) : ""}
+${row("Tax", formatCents(r.taxCents))}${r.shippingCents ? row("Shipping", formatCents(r.shippingCents)) : ""}${r.dualPricing?.cardAdjustmentCents ? row(`Card price adjustment (${r.dualPricing.percent})`, formatCents(r.dualPricing.cardAdjustmentCents)) : ""}
 ${row(r.pricedAt === "CARD" ? "Total (card price)" : "Total", formatCents(total), "b")}</table>
 ${
   r.dualPricing
@@ -212,6 +216,7 @@ export function receiptTerminalHtml(r: Receipt): string {
     ...(r.discountCents ? [pair("Discounts", `-${formatCents(r.discountCents)}`)] : []),
     ...r.promotions.map((p) => pair(`  ${p.name.slice(0, 24)}`, `-${formatCents(p.discountCents)}`)),
     pair("Tax", formatCents(r.taxCents)),
+    ...(r.shippingCents ? [pair("Shipping", formatCents(r.shippingCents))] : []),
     ...(r.dualPricing?.cardAdjustmentCents ? [pair(`Card adj. (${r.dualPricing.percent})`, formatCents(r.dualPricing.cardAdjustmentCents))] : []),
     text(`${r.pricedAt === "CARD" ? "CARD TOTAL" : "TOTAL"} ${formatCents(total)}`, "large bold right"),
     ...(r.dualPricing

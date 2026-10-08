@@ -7,14 +7,33 @@ export interface ExternalOrderLine {
   unitPriceCents: number;
 }
 
+/** Where the buyer wants it shipped, as far as the channel tells us. */
+export interface ExternalAddress {
+  name?: string;
+  line1?: string;
+  line2?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
+  phone?: string;
+}
+
 export interface ExternalOrder {
   externalId: string;
   createdAt: Date;
   customerEmail?: string;
   customerName?: string;
+  customerPhone?: string;
   lines: ExternalOrderLine[];
   taxCents: number;
+  /** Everything the buyer paid, shipping included. */
   totalCents: number;
+  /** Shipping the buyer paid (part of totalCents). */
+  shippingCents?: number;
+  shippingAddress?: ExternalAddress;
+  /** Outside channels ship unless the channel says the buyer collects (default SHIP). */
+  fulfillment?: "PICKUP" | "SHIP";
 }
 
 /**

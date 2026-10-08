@@ -150,3 +150,35 @@ export function layawayStatementHtml(s: LayawayStatement): string {
 <h2>Terms</h2>${s.terms.map((t) => `<p>${esc(t)}</p>`).join("")}${s.store.footer ? `<p>${esc(s.store.footer)}</p>` : ""}`,
   );
 }
+
+// ── Pick ticket / packing slip ───────────────────────────────────
+
+import { addressLines, type PickTicket } from "./fulfillment.js";
+
+/** Printable pick ticket (pickup) / packing slip (shipping) for an online order. */
+export function pickTicketHtml(t: PickTicket): string {
+  const money = (c: number) => formatCents(c);
+  const when = (d: Date | null) => (d ? esc(d.toLocaleString("en-US", { timeZone: t.store.timeZone })) : "");
+  const kind = t.fulfillment === "SHIP" ? "Packing slip" : "Pick ticket";
+  const title = `${kind} · Order #${t.orderNumber}`;
+  const rows = t.lines
+    .map((l) => `<tr><td class="r" style="font-size:18px">${l.picked ? "&#9746;" : "&#9744;"}</td><td>${esc(l.sku)}</td><td>${esc(l.title)}</td><td class="r">${l.quantity}</td><td class="r">${money(l.unitCents)}</td><td class="r">${money(l.totalCents)}</td></tr>`)
+    .join("");
+  const address = addressLines(t.shippingAddress);
+  const how =
+    t.fulfillment === "SHIP"
+      ? `<b>SHIP TO</b><br>${address.length ? address.map(esc).join("<br>") : "<i>no address on the order</i>"}${t.carrier ? `<br><b>Carrier</b> ${esc(t.carrier)}${t.trackingNumber ? ` · ${esc(t.trackingNumber)}` : ""}` : ""}`
+      : `<b>IN-STORE PICKUP</b>${t.pickupInstructions ? `<br>${esc(t.pickupInstructions)}` : ""}`;
+  const contact = t.customer ? [t.customer.name, t.customer.email, t.customer.phone].filter(Boolean).map((s) => esc(s!)).join("<br>") : "<i>no customer</i>";
+  const payments = t.payments.map((p) => `<tr><td colspan="5" class="r">${esc(p.label)}${p.detail ? ` (${esc(p.detail)})` : ""}</td><td class="r">${money(p.amountCents)}</td></tr>`).join("");
+  return page(
+    title,
+    `<h1>${esc(title)}</h1><div>${esc(t.store.name)}${t.store.address ? ` · ${esc(t.store.address)}` : ""}${t.store.phone ? ` · ${esc(t.store.phone)}` : ""}</div>
+<div class="meta"><div>${how}</div><div><b>Customer</b><br>${contact}</div>
+<div><b>Channel</b> ${esc(t.channel)}${t.externalId ? ` #${esc(t.externalId)}` : ""}<br><b>Placed</b> ${when(t.createdAt)}<br><b>Status</b> ${esc((t.fulfillmentStatus ?? "").replace("_", " ").toLowerCase())}</div>
+<div><b>Items</b> ${t.items}${t.customerNote ? `<br><b>Customer note</b> ${esc(t.customerNote)}` : ""}</div></div>
+<table><thead><tr><th class="r">Set aside</th><th>SKU</th><th>Item</th><th class="r">Qty</th><th class="r">Price</th><th class="r">Total</th></tr></thead><tbody>${rows}</tbody>
+<tfoot><tr><td colspan="5" class="r">Subtotal</td><td class="r">${money(t.subtotalCents)}</td></tr>${t.discountCents ? `<tr><td colspan="5" class="r">Discounts</td><td class="r">-${money(t.discountCents)}</td></tr>` : ""}<tr><td colspan="5" class="r">Tax</td><td class="r">${money(t.taxCents)}</td></tr>${t.shippingCents ? `<tr><td colspan="5" class="r">Shipping</td><td class="r">${money(t.shippingCents)}</td></tr>` : ""}${t.cardAdjustmentCents ? `<tr><td colspan="5" class="r">Card price adjustment${t.cardPricePercent ? ` (${esc(t.cardPricePercent)})` : ""}</td><td class="r">${money(t.cardAdjustmentCents)}</td></tr>` : ""}<tr><td colspan="5" class="r">Total paid</td><td class="r">${money(t.totalCents)}</td></tr>${payments}</tfoot></table>
+<div class="sign"><div>Set aside by${t.setAsideBy ? `: ${esc(t.setAsideBy)}` : ""}</div><div>On${t.setAsideAt ? `: ${when(t.setAsideAt)}` : ""}</div></div>${t.store.footer ? `<p>${esc(t.store.footer)}</p>` : ""}`,
+  );
+}

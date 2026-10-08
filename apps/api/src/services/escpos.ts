@@ -238,3 +238,81 @@ export function layawayStatementEscPos(s: LayawayStatement, width = 42): Buffer 
     ...FEED_AND_CUT,
   ]);
 }
+
+// ── Pick ticket / packing slip ───────────────────────────────────
+
+import { addressLines, type PickTicket } from "./fulfillment.js";
+
+/** Fixed-width pick ticket for thermal printers (42 columns for 80mm, 32 for 58mm). */
+export function pickTicketText(t: PickTicket, width = 42): string {
+  const out: string[] = [];
+  const center = (s: string) => " ".repeat(Math.max(0, Math.floor((width - s.length) / 2))) + s.slice(0, width);
+  const rule = "-".repeat(width);
+  const money = (c: number) => formatCents(c);
+  const when = (d: Date) => d.toLocaleString("en-US", { timeZone: t.store.timeZone, dateStyle: "short", timeStyle: "short" });
+
+  out.push(center(t.store.name));
+  out.push(center(t.fulfillment === "SHIP" ? `PACKING SLIP  Order #${t.orderNumber}` : `PICK TICKET  Order #${t.orderNumber}`));
+  out.push(center(`${t.channel}${t.externalId ? ` #${t.externalId}` : ""}  ${when(t.createdAt)}`));
+  out.push(rule);
+  if (t.fulfillment === "SHIP") {
+    out.push("SHIP TO");
+    const lines = addressLines(t.shippingAddress);
+    if (lines.length === 0) out.push("  (no address on the order)");
+    for (const l of lines) out.push(...wrap(l, width - 2).map((x) => `  ${x}`));
+    if (t.carrier) out.push(pad("  Carrier", `${t.carrier}${t.trackingNumber ? ` ${t.trackingNumber}` : ""}`, width));
+  } else {
+    out.push("IN-STORE PICKUP");
+    if (t.pickupInstructions) out.push(...wrap(t.pickupInstructions, width - 2).map((x) => `  ${x}`));
+  }
+  if (t.customer) {
+    out.push("CUSTOMER");
+    for (const s of [t.customer.name, t.customer.email, t.customer.phone]) if (s) out.push(`  ${s.slice(0, width - 2)}`);
+  }
+  if (t.customerNote) {
+    out.push("NOTE");
+    out.push(...wrap(t.customerNote, width - 2).map((x) => `  ${x}`));
+  }
+  out.push(rule, `ITEMS (${t.items})`);
+  for (const l of t.lines) {
+    out.push(pad(`[${l.picked ? "x" : " "}] ${l.quantity} x ${l.title}`, money(l.totalCents), width));
+    out.push(`      ${l.sku}${l.quantity > 1 ? `  @ ${money(l.unitCents)} ea` : ""}`.slice(0, width));
+  }
+  out.push(rule);
+  out.push(pad("Subtotal", money(t.subtotalCents), width));
+  if (t.discountCents) out.push(pad("Discounts", `-${money(t.discountCents)}`, width));
+  out.push(pad("Tax", money(t.taxCents), width));
+  if (t.shippingCents) out.push(pad("Shipping", money(t.shippingCents), width));
+  if (t.cardAdjustmentCents) out.push(pad(`Card price adj.${t.cardPricePercent ? ` (${t.cardPricePercent})` : ""}`, money(t.cardAdjustmentCents), width));
+  out.push(pad("TOTAL PAID", money(t.totalCents), width));
+  for (const p of t.payments) {
+    out.push(pad(`  ${p.label}`, money(p.amountCents), width));
+    if (p.detail) out.push(`     ${p.detail}`);
+  }
+  out.push(rule);
+  out.push(pad("Set aside by", t.setAsideBy ?? "______________", width));
+  out.push(pad("On", t.setAsideAt ? when(t.setAsideAt) : "______________", width));
+  if (t.store.footer) {
+    out.push("");
+    t.store.footer.split("\n").forEach((l) => out.push(center(l)));
+  }
+  return out.join("\n");
+}
+
+/** The pick ticket as ESC/POS: store name big, then the fixed-width text, feed and cut. */
+export function pickTicketEscPos(t: PickTicket, width = 42): Buffer {
+  const [, ...rest] = pickTicketText(t, width).split("\n");
+  return Buffer.from([
+    ...INIT,
+    ...CODEPAGE_437,
+    ...ALIGN_CENTER,
+    ...DOUBLE,
+    ...ascii(t.store.name.slice(0, Math.floor(width / 2))),
+    0x0a,
+    ...NORMAL,
+    ...ALIGN_LEFT,
+    ...ascii(rest.join("\n")),
+    0x0a,
+    ...FEED_AND_CUT,
+  ]);
+}

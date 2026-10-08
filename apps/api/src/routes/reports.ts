@@ -93,6 +93,13 @@ export function reportRoutes(app: FastifyInstance, base: Ctx) {
     return send(reply, q.format, "transfers", q.format === "csv" ? r.rows : r);
   });
 
+  /** Online orders placed in the range: counts by channel and method, time to ready / done, what's open, a row per order. */
+  app.get("/reports/fulfillment", reports, async (req, reply) => {
+    const q = parse(RangeQuery, req.query);
+    const r = await R.fulfillmentReport(prisma, await range(q));
+    return send(reply, q.format, "fulfillment", q.format === "csv" ? r.rows : r);
+  });
+
   app.get("/reports/inventory-valuation", reports, async (req, reply) => {
     const q = parse(StockQuery.extend({ by: z.enum(["category", "brand"]).default("category") }), req.query);
     const r = await R.inventoryValuation(prisma, q, q.by);

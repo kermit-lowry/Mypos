@@ -1,6 +1,6 @@
-import { Prisma, type ProductKind } from "@prisma/client";
+import { Prisma, type FulfillmentMethod, type ProductKind } from "@prisma/client";
 import { gradeLabel, isNewItem, ITEM_CONDITION_LABELS, type ItemCondition } from "@mypos/shared";
-import { applyBps, cardAdjustment, cardAmountDue, discountBps, dualTotals, earnFor, isCardPriced, type CheckoutInput, type Permission, type TenderType } from "@mypos/shared";
+import { applyBps, cardAdjustment, cardAmountDue, discountBps, dualTotals, earnFor, isCardPriced, type CheckoutInput, type DualTotals, type Permission, type TenderType } from "@mypos/shared";
 import type { Tx } from "../db.js";
 import { AppError, badRequest, conflict, forbidden, notFound, paymentFailed } from "../errors.js";
 import { config } from "../config.js";
@@ -145,22 +145,32 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
   const dual = dualTotals(priced, location.taxRateBps, location.cardPriceBps);
   const totals = dual.cash;
 
+  // ── Online orders: how the customer gets it, and shipping on top of the goods ──
+  // Any order with a method set (or from an outside channel) joins the
+  // fulfillment queue. Shipping is charged as given: not taxed, no card markup.
+  const fulfillment: FulfillmentMethod | null = input.fulfillment ?? (input.channel === "POS" ? null : input.channel === "STOREFRONT" ? "PICKUP" : "SHIP");
+  const shippingCents = fulfillment === "SHIP" ? (input.shippingCents ?? 0) : 0;
+  const due: DualTotals = shippingCents
+    ? { cash: { ...dual.cash, totalCents: dual.cash.totalCents + shippingCents }, card: { ...dual.card, totalCents: dual.card.totalCents + shippingCents } }
+    : dual;
+
   // ── Validate tenders ───────────────────────────────────────
   // Preorder deposits were collected at their stated amount and count at the cash price.
   const deposit = opts.preorder?.depositCents ?? 0;
   const cashPricedPaid = input.tenders.filter((t) => !isCardPriced(t.type, location.cardPricedTenders)).reduce((a, t) => a + t.amountCents, 0) + deposit;
   const cardPaid = input.tenders.filter((t) => isCardPriced(t.type, location.cardPricedTenders)).reduce((a, t) => a + t.amountCents, 0);
-  const cardDue = cardAmountDue(dual, cashPricedPaid);
-  if (cashPricedPaid > totals.totalCents || cardPaid !== cardDue) {
+  const cardDue = cardAmountDue(due, cashPricedPaid);
+  if (cashPricedPaid > due.cash.totalCents || cardPaid !== cardDue) {
     throw badRequest("TENDER_MISMATCH", "Tenders must equal the order total", {
-      cashTotalCents: dual.cash.totalCents,
-      cardTotalCents: dual.card.totalCents,
+      cashTotalCents: due.cash.totalCents,
+      cardTotalCents: due.card.totalCents,
+      shippingCents,
       cashPricedPaidCents: cashPricedPaid,
       cardDueCents: cardDue,
       cardPaidCents: cardPaid,
     });
   }
-  const adjustment = cardAdjustment(dual, cardPaid, cashPricedPaid);
+  const adjustment = cardAdjustment(due, cardPaid, cashPricedPaid);
   let changeCents = 0;
   for (const t of input.tenders) {
     if (opts.allowedTenders && !opts.allowedTenders.includes(t.type)) throw badRequest("TENDER_NOT_ALLOWED", `${t.type} not accepted here`);
@@ -213,6 +223,13 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
           idempotencyKey: input.idempotencyKey,
           note: input.note,
           ...totals,
+          totalCents: totals.totalCents + shippingCents,
+          shippingCents,
+          fulfillment,
+          fulfillmentStatus: fulfillment ? "NEW" : null,
+          shippingAddress: input.shippingAddress ? (input.shippingAddress as Prisma.InputJsonObject) : undefined,
+          customerPhone: input.customerPhone?.trim() || undefined,
+          customerNote: input.customerNote?.trim() || undefined,
         },
       });
       // Created one at a time so line ids line up with `priced` by index.
@@ -407,7 +424,7 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
           cardAdjustmentCents: adjustment.adjustmentCents,
           cardAdjustmentTaxCents: adjustment.taxCents,
           cardPriceBps: location.cardPriceBps,
-          cardTotalCents: dual.card.totalCents,
+          cardTotalCents: due.card.totalCents,
           loyaltyEarned,
           loyaltyUnit: loyaltyEarned > 0 ? unitFor(program) : null,
           loyaltyEligibleCents,

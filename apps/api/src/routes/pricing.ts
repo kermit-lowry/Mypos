@@ -40,6 +40,12 @@ export function pricingRoutes(app: FastifyInstance, base: Ctx) {
         layawayTermDays: z.number().int().min(1).max(365).optional(),
         layawayCancelFeeCents: z.number().int().min(0).max(100_000).optional(),
         layawayCancelFeeBps: z.number().int().min(0).max(10_000).optional(),
+        /** Online orders: which methods the web store offers, flat shipping, free shipping above a goods subtotal, and what to tell pickup customers. */
+        onlinePickupEnabled: z.boolean().optional(),
+        onlineShippingEnabled: z.boolean().optional(),
+        onlineShippingFlatCents: z.number().int().min(0).max(100_000).optional(),
+        onlineFreeShippingOverCents: z.number().int().min(0).max(10_000_000).nullable().optional(),
+        pickupInstructions: z.string().max(500).nullable().optional(),
       }),
       req.body,
     );

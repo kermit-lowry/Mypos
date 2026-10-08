@@ -262,7 +262,7 @@ export async function dashboard(db: Db, locationId: string | undefined, timeZone
   const from = new Date(startLocal.getTime() - offsetMs);
   const to = new Date(from.getTime() + 86_400_000);
   const r: Range = { from, to, locationId };
-  const [today, hourly, topItems, tenders, low, pendingPayments, openPos, inTransit] = await Promise.all([
+  const [today, hourly, topItems, tenders, low, pendingPayments, openPos, inTransit, onlineOrders] = await Promise.all([
     salesSummary(db, r),
     salesByPeriod(db, r, "hour", timeZone),
     salesBy(db, r, "product", 5),
@@ -271,8 +271,102 @@ export async function dashboard(db: Db, locationId: string | undefined, timeZone
     db.payment.count({ where: { status: "PENDING", tender: "CARD" } }),
     db.purchaseOrder.count({ where: { status: { in: ["ORDERED", "PARTIAL"] }, ...(locationId ? { locationId } : {}) } }),
     db.transfer.count({ where: { status: "SENT", ...(locationId ? { OR: [{ fromLocationId: locationId }, { toLocationId: locationId }] } : {}) } }),
+    onlineOrdersNow(db, locationId),
   ]);
-  return { date: from.toISOString(), today, hourly, topItems, tenders, lowStock: low.slice(0, 10), lowStockCount: low.length, pendingPayments, openPurchaseOrders: openPos, transfersInTransit: inTransit };
+  return { date: from.toISOString(), today, hourly, topItems, tenders, lowStock: low.slice(0, 10), lowStockCount: low.length, pendingPayments, openPurchaseOrders: openPos, transfersInTransit: inTransit, onlineOrders };
+}
+
+// ── Online order fulfillment ─────────────────────────────────────
+
+import { OPEN_STATUSES, openWhere } from "./fulfillment.js";
+
+/** Online orders waiting right now: everything open, the untouched ones, and the ones ready to hand over / pack. */
+export async function onlineOrdersNow(db: Db, locationId: string | undefined) {
+  const groups = await db.order.groupBy({ by: ["fulfillmentStatus"], where: openWhere(locationId), _count: { _all: true } });
+  const count = (s: string) => groups.find((g) => g.fulfillmentStatus === s)?._count._all ?? 0;
+  return { open: OPEN_STATUSES.reduce((a, s) => a + count(s), 0), new: count("NEW"), ready: count("READY") };
+}
+
+const minutes = (a: Date, b: Date) => Math.max(0, Math.round((b.getTime() - a.getTime()) / 60_000));
+const avg = (xs: number[]) => (xs.length ? Math.round(xs.reduce((a, x) => a + x, 0) / xs.length) : null);
+
+/**
+ * Online orders placed in the range: how many by channel and method, how long
+ * they took to be set aside (NEW→READY) and finished (NEW→SHIPPED/PICKED_UP),
+ * what's still open, and a row per order.
+ */
+export async function fulfillmentReport(db: Db, r: Range) {
+  const [orders, openNow] = await Promise.all([
+    db.order.findMany({
+      where: { fulfillment: { not: null }, status: { not: "VOID" }, createdAt: { gte: r.from, lt: r.to }, ...(r.locationId ? { locationId: r.locationId } : {}) },
+      orderBy: { createdAt: "asc" },
+      select: {
+        number: true,
+        channel: true,
+        fulfillment: true,
+        fulfillmentStatus: true,
+        status: true,
+        createdAt: true,
+        acknowledgedAt: true,
+        readyAt: true,
+        shippedAt: true,
+        pickedUpAt: true,
+        totalCents: true,
+        cardAdjustmentCents: true,
+        shippingCents: true,
+        customer: { select: { name: true } },
+      },
+    }),
+    db.order.count({ where: openWhere(r.locationId) }),
+  ]);
+  const closed = (s: string) => s === "REFUNDED" || s === "VOID";
+  const rows = orders.map((o) => {
+    const done = o.shippedAt ?? o.pickedUpAt ?? null;
+    const open = !closed(o.status) && !!o.fulfillmentStatus && (OPEN_STATUSES as string[]).includes(o.fulfillmentStatus);
+    return {
+      number: o.number,
+      channel: o.channel,
+      method: o.fulfillment,
+      status: o.fulfillmentStatus,
+      orderStatus: o.status,
+      customer: o.customer?.name ?? null,
+      created: o.createdAt,
+      acknowledged: o.acknowledgedAt,
+      ready: o.readyAt,
+      done,
+      minutesToReady: o.readyAt ? minutes(o.createdAt, o.readyAt) : null,
+      /** NEW → shipped / picked up. */
+      minutes: done ? minutes(o.createdAt, done) : null,
+      open,
+      shippingCents: o.shippingCents,
+      totalCents: o.totalCents + o.cardAdjustmentCents,
+    };
+  });
+  const groups = new Map<string, { channel: string; method: string; orders: number; done: number; open: number; problems: number; toReady: number[]; toDone: number[]; totalCents: number }>();
+  for (const x of rows) {
+    const key = `${x.channel}|${x.method}`;
+    const g = groups.get(key) ?? { channel: x.channel, method: x.method ?? "", orders: 0, done: 0, open: 0, problems: 0, toReady: [], toDone: [], totalCents: 0 };
+    g.orders++;
+    if (x.done) g.done++;
+    if (x.open) g.open++;
+    if (x.status === "PROBLEM" && x.open) g.problems++;
+    if (x.minutesToReady !== null) g.toReady.push(x.minutesToReady);
+    if (x.minutes !== null) g.toDone.push(x.minutes);
+    g.totalCents += x.totalCents;
+    groups.set(key, g);
+  }
+  return {
+    orders: rows.length,
+    done: rows.filter((x) => x.done).length,
+    open: rows.filter((x) => x.open).length,
+    openNow,
+    avgMinutesToReady: avg(rows.map((x) => x.minutesToReady).filter((m): m is number => m !== null)),
+    avgMinutesToDone: avg(rows.map((x) => x.minutes).filter((m): m is number => m !== null)),
+    byChannel: [...groups.values()]
+      .map((g) => ({ channel: g.channel, method: g.method, orders: g.orders, done: g.done, open: g.open, problems: g.problems, avgMinutesToReady: avg(g.toReady), avgMinutesToDone: avg(g.toDone), totalCents: g.totalCents }))
+      .sort((a, b) => b.orders - a.orders),
+    rows,
+  };
 }
 
 /** Rows -> CSV (RFC 4180 quoting). */
