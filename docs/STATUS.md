@@ -86,6 +86,22 @@ gaps; the fixes are in this branch:
 - Back office: Layaways page (overdue flags, extend, notes, cancel), customer
   layaways, layaway liability report, terms in Store settings.
 
+**Online orders on the register**
+- A new web / marketplace order rings the register (chime, vibration on
+  Android), shows a toast with the customer, item count and pickup or ship,
+  and the Online tab counts it. Open it: acknowledge, tick items as they're
+  set aside, print a pick ticket, mark ready, then "Picked up" (confirm the
+  name) or "Ship" with carrier and tracking. Problems get a note and can be
+  reopened; the timeline shows who did what. Two registers can't take the
+  same step twice.
+- Storefront checkout asks for pickup or shipping; shipping is a flat rate
+  with an optional free-over amount, set under Store settings → Online
+  orders, with pickup instructions.
+- Back office: Orders page filters (online only / pickup / ship / new /
+  ready / done / problem) with the same actions, a dashboard tile, an
+  online-orders report (time to ready, time to done, by channel), and the
+  activity log reads "Set aside 2 of 3 items on order #12".
+
 ## First things to try on real hardware
 1. PAX terminal + Handpoint keys in `.env`, run a $1 sale and a refund.
 2. ESC/POS receipt printer with the drawer plugged in: cash sale pops the
