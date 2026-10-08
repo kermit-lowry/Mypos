@@ -18,6 +18,7 @@ import { SellScreen } from "./screens/SellScreen";
 import { LayawayScreen } from "./screens/LayawayScreen";
 import { clockLabel, ShiftScreen, useClockStatus } from "./screens/ShiftScreen";
 import { StoreSettingsScreen } from "./screens/StoreSettingsScreen";
+import { TasksScreen } from "./screens/TasksScreen";
 import { useLayout } from "./layout";
 import type { EffectivePermissions, Permission } from "@mypos/shared";
 import { ApprovalProvider, NotPermitted } from "./approval";
@@ -27,9 +28,10 @@ import { ActivityScreen } from "./screens/ActivityScreen";
 import { StaffScreen } from "./screens/StaffScreen";
 import { SessionContext, useCan, useSession, type Session, type Staff } from "./session";
 import * as storage from "./storage";
+import { TaskBadge, TasksProvider, useTasks } from "./tasks";
 import { colors, ui } from "./theme";
 
-const TABS = ["Sell", "Online", "Shift", "Layaways", "Buylist", "Events", "Labels", "Deals", "Activity", "Staff", "Store", "Loyalty", "Display"] as const;
+const TABS = ["Sell", "Online", "Shift", "Tasks", "Layaways", "Buylist", "Events", "Labels", "Deals", "Activity", "Staff", "Store", "Loyalty", "Display"] as const;
 type Tab = (typeof TABS)[number];
 /** Gated tabs, shown to employees who have any of the permissions (ALLOW or PIN). */
 const TAB_PERMISSION: Partial<Record<Tab, Permission[]>> = {
@@ -116,49 +118,54 @@ function RegisterApp() {
               setTab("Online");
             }}
           >
-            {/* The cart lives above the tabs, so changing tabs doesn't lose a sale. */}
-            <CartProvider>
-              {tab === "Display" ? (
-                <CustomerDisplayScreen onExit={() => setTab("Sell")} />
-              ) : (
-                <SafeAreaView style={ui.screen}>
-                  <View style={[ui.row, { paddingHorizontal: narrow ? 8 : 16, paddingTop: 8, gap: 8 }]}>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ gap: 8 }}>
-                      {visible.map((t) => (
-                        <Pressable
-                          key={t}
-                          onPress={() => setTab(t)}
-                          style={{ paddingVertical: 10, paddingHorizontal: 18, borderRadius: 8, backgroundColor: tab === t ? colors.accent : colors.panel }}
-                        >
-                          <TabTitle tab={t} />
-                        </Pressable>
-                      ))}
-                    </ScrollView>
-                    {!narrow && (
-                      <Text style={ui.muted}>
-                        {session.staff.name} · {session.location.name}
-                      </Text>
-                    )}
-                    <FulfillmentBadge />
-                    <ClockBadge />
-                    <SignOutButton onNotice={setSignOutNotice} />
-                  </View>
-                  {signOutNotice && <Text style={[ui.error, { paddingHorizontal: narrow ? 8 : 16, paddingTop: 4 }]}>{signOutNotice}</Text>}
-                  {tab === "Sell" && <SellScreen />}
-                  {tab === "Online" && <OnlineOrdersScreen focus={focusOrder} />}
-                  {tab === "Shift" && <ShiftScreen />}
-                  {tab === "Layaways" && <LayawayScreen />}
-                  {tab === "Buylist" && <BuylistScreen />}
-                  {tab === "Events" && <EventsScreen />}
-                  {tab === "Labels" && <LabelsScreen />}
-                  {tab === "Deals" && <DealsScreen />}
-                  {tab === "Activity" && <ActivityScreen />}
-                  {tab === "Staff" && <StaffScreen />}
-                  {tab === "Loyalty" && <LoyaltySettingsScreen />}
-                  {tab === "Store" && <StoreSettingsScreen onSaved={(location) => setSession({ ...session, location })} />}
-                </SafeAreaView>
-              )}
-            </CartProvider>
+            {/* The employee's tasks: the header badge and the once-per-sign-in briefing, over whichever tab they land on. */}
+            <TasksProvider silent={tab === "Display"} onOpen={() => setTab("Tasks")}>
+              {/* The cart lives above the tabs, so changing tabs doesn't lose a sale. */}
+              <CartProvider>
+                {tab === "Display" ? (
+                  <CustomerDisplayScreen onExit={() => setTab("Sell")} />
+                ) : (
+                  <SafeAreaView style={ui.screen}>
+                    <View style={[ui.row, { paddingHorizontal: narrow ? 8 : 16, paddingTop: 8, gap: 8 }]}>
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ gap: 8 }}>
+                        {visible.map((t) => (
+                          <Pressable
+                            key={t}
+                            onPress={() => setTab(t)}
+                            style={{ paddingVertical: 10, paddingHorizontal: 18, borderRadius: 8, backgroundColor: tab === t ? colors.accent : colors.panel }}
+                          >
+                            <TabTitle tab={t} />
+                          </Pressable>
+                        ))}
+                      </ScrollView>
+                      {!narrow && (
+                        <Text style={ui.muted}>
+                          {session.staff.name} · {session.location.name}
+                        </Text>
+                      )}
+                      {!narrow && <TaskBadge />}
+                      <FulfillmentBadge />
+                      <ClockBadge />
+                      <SignOutButton onNotice={setSignOutNotice} />
+                    </View>
+                    {signOutNotice && <Text style={[ui.error, { paddingHorizontal: narrow ? 8 : 16, paddingTop: 4 }]}>{signOutNotice}</Text>}
+                    {tab === "Sell" && <SellScreen />}
+                    {tab === "Online" && <OnlineOrdersScreen focus={focusOrder} />}
+                    {tab === "Shift" && <ShiftScreen />}
+                    {tab === "Tasks" && <TasksScreen />}
+                    {tab === "Layaways" && <LayawayScreen />}
+                    {tab === "Buylist" && <BuylistScreen />}
+                    {tab === "Events" && <EventsScreen />}
+                    {tab === "Labels" && <LabelsScreen />}
+                    {tab === "Deals" && <DealsScreen />}
+                    {tab === "Activity" && <ActivityScreen />}
+                    {tab === "Staff" && <StaffScreen />}
+                    {tab === "Loyalty" && <LoyaltySettingsScreen />}
+                    {tab === "Store" && <StoreSettingsScreen onSaved={(location) => setSession({ ...session, location })} />}
+                  </SafeAreaView>
+                )}
+              </CartProvider>
+            </TasksProvider>
           </FulfillmentProvider>
         </ApprovalProvider>
       </SessionContext.Provider>
@@ -166,10 +173,11 @@ function RegisterApp() {
   );
 }
 
-/** The tab's name; "Online" carries how many online orders are open. */
+/** The tab's name; "Online" carries how many online orders are open, "Tasks" how many tasks are due. */
 function TabTitle({ tab }: { tab: Tab }) {
   const { counts } = useFulfillmentQueue();
-  const n = tab === "Online" ? counts.total : 0;
+  const tasks = useTasks();
+  const n = tab === "Online" ? counts.total : tab === "Tasks" ? (tasks.data?.counts.open ?? 0) : 0;
   return (
     <Text style={[ui.text, { fontWeight: "600" }]}>
       {tab}

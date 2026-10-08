@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { api, ApiError } from "../../api";
-import { useSession } from "../../session";
+import { useCan, useSession } from "../../session";
 import { colors, ui } from "../../theme";
 import { Card, money, pct, Stat, Table } from "../ui";
 
@@ -20,14 +20,30 @@ interface Data {
   onlineOrders?: { open?: number; new?: number; ready?: number } | null;
 }
 
+/** Today's employee tasks at this store, counted by status (managers only). */
+interface TaskCounts {
+  open: number;
+  overdue: number;
+  done: number;
+}
+
 /** Today at a glance. */
 export function Dashboard() {
   const { location } = useSession();
+  const can = useCan();
+  const showTasks = can("MANAGE_TASKS") === "ALLOW";
   const [d, setD] = useState<Data | null>(null);
+  const [tasks, setTasks] = useState<TaskCounts | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     api<Data>("GET", `/dashboard?locationId=${location.id}`).then(setD).catch((e) => setError(e instanceof ApiError ? e.message : String(e)));
   }, [location.id]);
+  useEffect(() => {
+    if (!showTasks) return;
+    api<{ occurrences: { status: string }[]; overdue: unknown[] }>("GET", `/tasks/board?locationId=${location.id}`)
+      .then((b) => setTasks({ open: b.occurrences.filter((o) => o.status === "OPEN").length, overdue: b.overdue.length, done: b.occurrences.filter((o) => o.status === "DONE").length }))
+      .catch(() => undefined);
+  }, [location.id, showTasks]);
 
   if (error) return <Text style={[ui.error, { padding: 16 }]}>{error}</Text>;
   if (!d) return <Text style={[ui.muted, { padding: 16 }]}>Loading…</Text>;
@@ -45,6 +61,7 @@ export function Dashboard() {
         <Stat label="Needs attention" value={String(d.pendingPayments + d.lowStockCount)} sub={`${d.pendingPayments} card payments · ${d.lowStockCount} low stock`} tone={d.pendingPayments ? "bad" : d.lowStockCount ? "warn" : undefined} />
         {oo && <Stat label="Online orders" value={String(oo.open)} sub={`${oo.new} new online orders · ${oo.ready} ready for pickup`} tone={oo.new > 0 ? "bad" : oo.ready > 0 ? "good" : undefined} />}
         <Stat label="Purchasing" value={String(d.openPurchaseOrders)} sub={`open orders · ${d.transfersInTransit} transfers in transit`} />
+        {showTasks && tasks && <Stat label="Tasks today" value={String(tasks.open)} sub={`${tasks.overdue} overdue · ${tasks.done} done`} tone={tasks.overdue > 0 ? "bad" : undefined} />}
       </View>
 
       <Card title="Sales by hour">

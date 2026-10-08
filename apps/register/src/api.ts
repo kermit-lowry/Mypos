@@ -503,3 +503,99 @@ export interface FulfillmentQueueOrder {
   totalCents: number;
   createdAt: string;
 }
+
+// ─── Employee tasks ──────────────────────────────────────────────
+
+export type TaskPriority = "LOW" | "NORMAL" | "HIGH";
+export type TaskRecurrence = "ONCE" | "DAILY" | "WEEKLY" | "MONTHLY";
+export type TaskAssigneeType = "ANYONE" | "ROLE" | "EMPLOYEE";
+export type TaskStatus = "OPEN" | "DONE" | "SKIPPED";
+export type TaskRole = "OWNER" | "MANAGER" | "CASHIER";
+
+/** One day's instance of a task at one store: what an employee ticks off. */
+export interface TaskOccurrence {
+  id: string;
+  taskId: string;
+  locationId: string;
+  title: string;
+  instructions: string | null;
+  checklist: string[];
+  /** Indices into `checklist` that are ticked. */
+  checklistDone: number[];
+  priority: TaskPriority;
+  recurrence: TaskRecurrence;
+  /** The task's schedule (WEEKLY: 0 = Sunday; MONTHLY: 31 = the last day); older API builds leave them out. */
+  daysOfWeek?: number[];
+  dayOfMonth?: number | null;
+  requireNote: boolean;
+  /** Store-local day, "YYYY-MM-DD". */
+  dueOn: string;
+  dueAt: string;
+  /** Store-local "HH:mm"; null = by the end of the day. */
+  dueTime: string | null;
+  status: TaskStatus;
+  assignee: { type: TaskAssigneeType; role?: TaskRole | null; employee?: { id: string; name: string } | null };
+  completedBy: { id: string; name: string } | null;
+  completedAt: string | null;
+  late: boolean;
+  note: string | null;
+  skipReason: string | null;
+}
+
+/** GET /tasks/mine: what the signed-in employee sees. */
+export interface MyTasks {
+  today: TaskOccurrence[];
+  overdue: TaskOccurrence[];
+  upcoming: TaskOccurrence[];
+  counts: { open: number; overdue: number; doneToday: number };
+}
+
+/** A task definition (managers): the schedule and who it is for. */
+export interface TaskDef {
+  id: string;
+  /** null = every store */
+  locationId: string | null;
+  location?: { id: string; name: string } | null;
+  title: string;
+  instructions: string | null;
+  checklist: string[];
+  priority: TaskPriority;
+  recurrence: TaskRecurrence;
+  /** WEEKLY: 0 = Sunday … 6 = Saturday */
+  daysOfWeek: number[];
+  /** MONTHLY: 1..31; past the month's end = its last day */
+  dayOfMonth: number | null;
+  dueTime: string | null;
+  startsOn: string;
+  endsOn: string | null;
+  nextDueOn: string | null;
+  assigneeType: TaskAssigneeType;
+  assigneeRole: TaskRole | null;
+  assigneeId: string | null;
+  assignee?: { id: string; name: string } | null;
+  requireNote: boolean;
+  active: boolean;
+  createdById?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** POST /tasks and PATCH /tasks/:id (partial). */
+export interface TaskInput {
+  locationId?: string | null;
+  title: string;
+  instructions?: string | null;
+  checklist?: string[];
+  priority?: TaskPriority;
+  recurrence: TaskRecurrence;
+  daysOfWeek?: number[];
+  dayOfMonth?: number | null;
+  dueTime?: string | null;
+  startsOn: string;
+  endsOn?: string | null;
+  assigneeType?: TaskAssigneeType;
+  assigneeRole?: TaskRole | null;
+  assigneeId?: string | null;
+  requireNote?: boolean;
+  active?: boolean;
+}

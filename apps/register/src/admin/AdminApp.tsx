@@ -22,10 +22,12 @@ import { Orders } from "./pages/Orders";
 import { Purchasing } from "./pages/Purchasing";
 import { Reports } from "./pages/Reports";
 import { Shifts } from "./pages/Shifts";
+import { TasksPage } from "./pages/Tasks";
 import { Timesheets } from "./pages/Timesheets";
 import { Transfers } from "./pages/Transfers";
+import { TaskReminder } from "./TaskReminder";
 
-type PageId = "dashboard" | "orders" | "shifts" | "layaways" | "reports" | "products" | "brands" | "purchase-orders" | "vendors" | "purchase-report" | "transfers" | "transfer-report" | "customers" | "employees" | "timesheets" | "deals" | "loyalty" | "store" | "activity";
+type PageId = "dashboard" | "orders" | "shifts" | "layaways" | "reports" | "products" | "brands" | "purchase-orders" | "vendors" | "purchase-report" | "transfers" | "transfer-report" | "customers" | "employees" | "timesheets" | "tasks" | "deals" | "loyalty" | "store" | "activity";
 
 interface NavItem {
   id: PageId;
@@ -53,7 +55,7 @@ const NAV: NavGroup[] = [
   },
   { label: "Transfers", items: [{ id: "transfers", label: "Transfers", perms: ["MANAGE_TRANSFERS", "RECEIVE_STOCK"] }, { id: "transfer-report", label: "Transfer Report", perms: ["VIEW_REPORTS"] }] },
   { items: [{ id: "customers", label: "Customers", perms: ["MANAGE_CUSTOMERS", "ADJUST_BALANCES"] }] },
-  { label: "Employees", items: [{ id: "employees", label: "Employees", perms: ["MANAGE_STAFF"] }, { id: "timesheets", label: "Timesheets", perms: ["MANAGE_TIMESHEETS", "VIEW_REPORTS"] }] },
+  { label: "Employees", items: [{ id: "employees", label: "Employees", perms: ["MANAGE_STAFF"] }, { id: "timesheets", label: "Timesheets", perms: ["MANAGE_TIMESHEETS", "VIEW_REPORTS"] }, { id: "tasks", label: "Tasks", perms: ["MANAGE_TASKS"] }] },
   { label: "Marketing", items: [{ id: "deals", label: "Deals", perms: ["MANAGE_DEALS"] }, { id: "loyalty", label: "Loyalty", perms: ["MANAGE_LOYALTY"] }] },
   { label: "Settings", items: [{ id: "store", label: "Store", perms: ["MANAGE_SETTINGS"] }, { id: "activity", label: "Activity log", perms: ["VIEW_REPORTS"] }] },
 ];
@@ -74,6 +76,7 @@ const PAGES: Record<PageId, (ctx: { onLocationSaved: (l: Location) => void }) =>
   customers: () => <Customers />,
   employees: () => <StaffScreen />,
   timesheets: () => <Timesheets />,
+  tasks: () => <TasksPage />,
   deals: () => <DealsScreen />,
   loyalty: () => <LoyaltySettingsScreen />,
   store: ({ onLocationSaved }) => <StoreSettingsScreen onSaved={onLocationSaved} />,
@@ -119,6 +122,8 @@ export function AdminApp() {
   const [page, setPage] = useState<PageId>(() => savedPage() ?? "dashboard");
   const [menu, setMenu] = useState(false);
   const [changingPassword, setChangingPassword] = useState(false);
+  /** The sign-in task reminder, once dismissed, stays hidden until the next sign-in. */
+  const [reminderDismissed, setReminderDismissed] = useState(false);
   const { narrow, dialog } = useLayout();
 
   // Resume a session kept in the browser.
@@ -141,6 +146,7 @@ export function AdminApp() {
   const signOut = async () => {
     await setToken(null);
     setSession(null);
+    setReminderDismissed(false);
   };
 
   if (!ready) return <View style={ui.screen} />;
@@ -202,6 +208,7 @@ export function AdminApp() {
                   </View>
                 </View>
               </Modal>
+              {!reminderDismissed && <TaskReminder key={session.staff.id} onOpenTasks={() => go("tasks")} onDismiss={() => setReminderDismissed(true)} />}
               {current ? (
                 <View style={{ flex: 1 }} key={`${current.id}-${session.location.id}`}>
                   {PAGES[current.id]({ onLocationSaved: (location) => setSession({ ...session, location, locations: session.locations.map((l) => (l.id === location.id ? location : l)) }) })}

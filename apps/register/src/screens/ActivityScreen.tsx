@@ -39,6 +39,7 @@ const FILTERS: [string, string, Record<string, string>][] = [
   ["login", "Sign-ins", { action: "LOGIN" }],
   ["failed", "Failed sign-ins", { action: "LOGIN_FAILED" }],
   ["staff", "Employee changes", { action: "STAFF_CREATED,STAFF_UPDATED,ROLE_UPDATED" }],
+  ["tasks", "Tasks", { action: "TASK_CREATED,TASK_UPDATED,TASK_DELETED,TASK_COMPLETED,TASK_SKIPPED,TASK_REOPENED" }],
   ["catalog", "Catalog changes", { action: "PRODUCT_CREATED,PRODUCT_UPDATED,VARIANT_UPDATED,BRAND_CREATED,BRAND_RENAMED,BRAND_MERGED,PRODUCT_VENDOR_SET,PRODUCT_VENDOR_REMOVED" }],
   [
     "purchasing",
@@ -67,6 +68,32 @@ const REFUSAL: Record<string, string> = {
   APPROVER_LIMIT: "over that manager's discount limit",
   ALREADY_CLOCKED_IN: "already clocked in",
   NOT_CLOCKED_IN: "not clocked in",
+};
+const TASK_REPEATS: Record<string, string> = { ONCE: "one time", DAILY: "every day", WEEKLY: "weekly", MONTHLY: "monthly" };
+const TASK_ROLE: Record<string, string> = { OWNER: "owners", MANAGER: "managers", CASHIER: "cashiers" };
+/** Who a task is for, from the assignee object the task events carry: "anyone", "managers", "Sam". */
+const taskFor = (a: unknown) => (!isObject(a) ? "" : a.type === "ROLE" ? (TASK_ROLE[String(a.role)] ?? words(a.role)) : a.type === "EMPLOYEE" ? String(a.employee?.name ?? a.name ?? "an employee") : "anyone");
+/** Task edits as "due time 10:30 → 11:00, repeats weekly → every day, for anyone → cashiers". */
+const taskChanges = (c: unknown): string[] => {
+  if (!isObject(c)) return [];
+  const NAME: Record<string, string> = { dueTime: "due time", recurrence: "repeats", daysOfWeek: "days", dayOfMonth: "day of month", startsOn: "starts", endsOn: "ends", locationId: "store", assigneeType: "assigned to", assigneeRole: "role", assigneeId: "employee", requireNote: "needs a note", instructions: "instructions", checklist: "checklist", priority: "priority", title: "title", active: "active" };
+  const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const show = (k: string, v: unknown) => {
+    if (v == null || v === "") return k === "dueTime" ? "end of day" : k === "locationId" ? "every store" : "none";
+    if (k === "recurrence") return TASK_REPEATS[String(v)] ?? words(v);
+    if (k === "assigneeRole") return TASK_ROLE[String(v)] ?? words(v);
+    if (k === "assigneeType") return v === "ROLE" ? "a role" : v === "EMPLOYEE" ? "an employee" : "anyone";
+    // The event carries ids for these; the task's row shows the names.
+    if (k === "locationId") return "one store";
+    if (k === "assigneeId") return "an employee";
+    if (k === "daysOfWeek" && Array.isArray(v)) return v.map((d) => DAYS[Number(d)] ?? String(d)).join(", ") || "none";
+    if (k === "priority") return words(v);
+    return fmt(k, v);
+  };
+  return Object.entries(c).map(([k, v]) => {
+    const [from, to] = isObject(v) && ("from" in v || "to" in v) ? [v.from, v.to] : [undefined, v];
+    return `${NAME[k] ?? label(k)} ${show(k, from)} → ${show(k, to)}`;
+  });
 };
 const BALANCE_KIND: Record<string, string> = { STORE_CREDIT: "store credit", POINTS: "points", CASHBACK: "rewards" };
 /** "web order", "shopify order", "ebay order"; just "order" when the channel is unknown. */
@@ -296,6 +323,19 @@ function describe(e: Event): string {
       return `Edited ${whose(d)} time entry: ${timeChanges(d.changes).join(", ") || "updated"}`;
     case "TIME_ENTRY_DELETED":
       return `Deleted ${whose(d)} time entry${d.clockIn ? ` from ${clock(d.clockIn)}` : ""}${d.minutes != null ? ` (${hm(d.minutes)})` : ""}`;
+    // Tasks
+    case "TASK_COMPLETED":
+      return `Completed task "${d.title}"${d.late ? " (late)" : ""}${d.note ? `: ${d.note}` : ""}`;
+    case "TASK_SKIPPED":
+      return `Skipped task "${d.title}"${d.reason ? `: ${d.reason}` : ""}`;
+    case "TASK_REOPENED":
+      return `Reopened task "${d.title}"${d.was ? ` (was ${words(d.was)})` : ""}`;
+    case "TASK_CREATED":
+      return `Created task "${d.title}" (${[TASK_REPEATS[String(d.recurrence)] ?? words(d.recurrence), taskFor(d.assignee)].filter(Boolean).join(" · ")})`;
+    case "TASK_UPDATED":
+      return `Changed task "${d.title}": ${taskChanges(d.changes).join(", ") || "updated"}`;
+    case "TASK_DELETED":
+      return `Deactivated task "${d.title}"`;
     // Money
     case "BALANCE_ADJUSTED": {
       const points = d.kind === "POINTS";
