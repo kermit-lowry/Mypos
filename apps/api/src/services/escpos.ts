@@ -104,6 +104,13 @@ export function drawerReportText(r: SessionReport, width = 42): string {
   if (sales.cardAdjustmentCents) out.push(pad("Card price adj.", money(sales.cardAdjustmentCents), width));
   out.push(pad("Collected", money(sales.collectedCents), width));
   out.push(pad(`Refunds (${sales.refunds.count})`, neg(sales.refunds.amountCents), width));
+  // Reports stored before layaway existed have no block.
+  const layaway = r.layawayPayments as SessionReport["layawayPayments"] | undefined;
+  if (layaway) {
+    out.push(pad(`Layaway payments (${layaway.count})`, money(layaway.amountCents), width));
+    for (const t of layaway.byTender) out.push(pad(`  ${t.tender} (${t.count})`, money(t.amountCents), width));
+    if (layaway.refunds.count) out.push(pad(`Layaway refunds (${layaway.refunds.count})`, neg(layaway.refunds.amountCents), width));
+  }
   out.push("TENDERS");
   if (sales.byTender.length === 0) out.push("  none");
   for (const t of sales.byTender) out.push(pad(`  ${t.tender} (${t.count})`, money(t.amountCents), width));
@@ -139,6 +146,90 @@ export function drawerReportEscPos(r: SessionReport, width = 42): Buffer {
     ...ALIGN_CENTER,
     ...DOUBLE,
     ...ascii(r.session.locationName.slice(0, Math.floor(width / 2))),
+    0x0a,
+    ...NORMAL,
+    ...ALIGN_LEFT,
+    ...ascii(rest.join("\n")),
+    0x0a,
+    ...FEED_AND_CUT,
+  ]);
+}
+
+// ── Layaway statement ────────────────────────────────────────────
+
+import type { LayawayStatement } from "./layaway.js";
+
+/** Break a sentence into lines of at most `width` characters. */
+function wrap(text: string, width: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of text.split(/\s+/)) {
+    if (line && line.length + 1 + word.length > width) {
+      lines.push(line);
+      line = word;
+    } else line = line ? `${line} ${word}` : word;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+/** Fixed-width statement for thermal printers (42 columns for 80mm, 32 for 58mm). */
+export function layawayStatementText(s: LayawayStatement, width = 42): string {
+  const out: string[] = [];
+  const center = (t: string) => " ".repeat(Math.max(0, Math.floor((width - t.length) / 2))) + t.slice(0, width);
+  const rule = "-".repeat(width);
+  const money = (c: number) => formatCents(c);
+  const day = (d: Date) => d.toLocaleDateString("en-US");
+
+  out.push(center(s.store.name));
+  if (s.store.header) s.store.header.split("\n").forEach((l) => out.push(center(l)));
+  out.push(center(`LAYAWAY #${s.number}`));
+  out.push(center(`Opened ${day(s.createdAt)}`));
+  if (s.cashier) out.push(center(`Cashier: ${s.cashier}`));
+  out.push(center(`Customer: ${s.customer.name}`));
+  out.push(rule);
+  for (const l of s.lines) {
+    out.push(pad(l.quantity > 1 ? `${l.quantity} x ${l.title}` : l.title, money(l.totalCents + l.discountCents), width));
+    if (l.quantity > 1) out.push(`   @ ${money(l.unitCents)} ea`);
+    if (l.discountCents) out.push(pad("   Discount", `-${money(l.discountCents)}`, width));
+  }
+  out.push(rule);
+  out.push(pad("Subtotal", money(s.subtotalCents), width));
+  if (s.discountCents) out.push(pad("Discounts", `-${money(s.discountCents)}`, width));
+  for (const p of s.promotions) out.push(pad(`  ${p.name}`, `-${money(p.discountCents)}`, width));
+  out.push(pad("Tax", money(s.taxCents), width));
+  out.push(pad("TOTAL", money(s.totalCents), width));
+  out.push(rule, "PAYMENTS");
+  if (s.payments.length === 0) out.push("  none yet");
+  for (const p of s.payments) {
+    out.push(pad(`${day(p.at)} ${p.label}${p.deposit ? " (deposit)" : ""}`, money(p.amountCents), width));
+    if (p.appliedCents !== p.amountCents) out.push(pad("   applied to balance", money(p.appliedCents), width));
+    if (p.detail) out.push(`   ${p.detail}`);
+  }
+  out.push(rule);
+  out.push(pad("Paid toward balance", money(s.paidCents), width));
+  if (s.cardAdjustmentCents) out.push(pad(`Card price adj. (${s.dualPricing?.percent ?? ""})`, money(s.cardAdjustmentCents), width));
+  out.push(pad("BALANCE DUE", money(s.balanceCents), width));
+  if (s.dualPricing && s.balanceCents > 0) out.push(pad("  by card", money(s.cardBalanceCents), width));
+  if (s.status === "ACTIVE") out.push(pad("Due by", day(s.dueAt), width));
+  out.push(rule);
+  for (const t of s.terms) out.push(...wrap(t, width));
+  if (s.store.footer) {
+    out.push("");
+    s.store.footer.split("\n").forEach((l) => out.push(center(l)));
+  }
+  return out.join("\n");
+}
+
+/** The statement as ESC/POS: store name big, then the fixed-width text, feed and cut. */
+export function layawayStatementEscPos(s: LayawayStatement, width = 42): Buffer {
+  const [, ...rest] = layawayStatementText(s, width).split("\n");
+  return Buffer.from([
+    ...INIT,
+    ...CODEPAGE_437,
+    ...ALIGN_CENTER,
+    ...DOUBLE,
+    ...ascii(s.store.name.slice(0, Math.floor(width / 2))),
     0x0a,
     ...NORMAL,
     ...ALIGN_LEFT,

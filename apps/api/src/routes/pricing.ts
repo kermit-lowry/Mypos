@@ -34,6 +34,12 @@ export function pricingRoutes(app: FastifyInstance, base: Ctx) {
         requireDrawerSession: z.boolean().optional(),
         blindCashCount: z.boolean().optional(),
         cashVarianceAlertCents: z.number().int().min(0).max(100_000).optional(),
+        /** Layaway terms: offered at all, minimum deposit (bps of the total), default days until due, and the cancellation fee (flat and/or bps of the total; the larger applies). */
+        layawayEnabled: z.boolean().optional(),
+        layawayMinDepositBps: z.number().int().min(0).max(10_000).optional(),
+        layawayTermDays: z.number().int().min(1).max(365).optional(),
+        layawayCancelFeeCents: z.number().int().min(0).max(100_000).optional(),
+        layawayCancelFeeBps: z.number().int().min(0).max(10_000).optional(),
       }),
       req.body,
     );

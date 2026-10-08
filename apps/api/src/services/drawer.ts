@@ -248,6 +248,14 @@ export interface SessionReport {
     refunds: { count: number; amountCents: number; byTender: TenderRow[] };
     tradeIns: { tickets: number; paidCents: number; byPayout: Record<"CASH" | "STORE_CREDIT", { tickets: number; paidCents: number }> };
   };
+  /**
+   * Layaway deposits and payments taken in this session that haven't become a
+   * sale yet (no order), and cancellation refunds handed back. Once a layaway
+   * is picked up its payments belong to the sale, which then counts in `sales`
+   * in whichever session(s) its payments were taken. Absent on reports stored
+   * before layaway existed.
+   */
+  layawayPayments: { count: number; amountCents: number; byTender: TenderRow[]; refunds: { count: number; amountCents: number; byTender: TenderRow[] } };
   byEmployee: { staffId: string | null; name: string; orders: number; netCents: number; collectedCents: number }[];
 }
 
@@ -276,8 +284,12 @@ export async function sessionReport(db: Db, session: DrawerSession): Promise<Ses
     }
     return [...by.values()].sort((a, b) => b.amountCents - a.amountCents);
   };
-  const taken = payments.filter((p) => p.amountCents > 0);
-  const refunded = payments.filter((p) => p.amountCents < 0);
+  // A layaway payment belongs to the layaway until pick-up moves it onto the sale.
+  const onLayaway = (p: { layawayId: string | null; orderId: string | null }) => !!p.layawayId && !p.orderId;
+  const taken = payments.filter((p) => p.amountCents > 0 && !onLayaway(p));
+  const refunded = payments.filter((p) => p.amountCents < 0 && !onLayaway(p));
+  const layawayTaken = payments.filter((p) => p.amountCents > 0 && onLayaway(p));
+  const layawayRefunded = payments.filter((p) => p.amountCents < 0 && onLayaway(p));
 
   // Each order once, however many tenders paid it.
   const orders = new Map<string, NonNullable<(typeof payments)[number]["order"]>>();
@@ -344,6 +356,12 @@ export async function sessionReport(db: Db, session: DrawerSession): Promise<Ses
       byTender: tenderRows(taken),
       refunds: { count: refunded.length, amountCents: refunded.reduce((a, p) => a - p.amountCents, 0), byTender: tenderRows(refunded) },
       tradeIns: { tickets: buylists.length, paidCents: buylists.reduce((a, t) => a + (t.paidCents ?? 0), 0), byPayout },
+    },
+    layawayPayments: {
+      count: layawayTaken.length,
+      amountCents: layawayTaken.reduce((a, p) => a + p.amountCents, 0),
+      byTender: tenderRows(layawayTaken),
+      refunds: { count: layawayRefunded.length, amountCents: layawayRefunded.reduce((a, p) => a - p.amountCents, 0), byTender: tenderRows(layawayRefunded) },
     },
     byEmployee: [...byEmployee.values()].sort((a, b) => b.netCents - a.netCents),
   };
