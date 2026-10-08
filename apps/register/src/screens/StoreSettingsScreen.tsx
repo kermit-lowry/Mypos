@@ -7,10 +7,21 @@ import { useCan, useSession } from "../session";
 import { TradeInRules } from "./TradeInRules";
 import { colors, ui } from "../theme";
 
-/** Owner-only store settings: dual pricing, label printer, receipt text. */
+/** Cash drawer rules a location carries; optional so an older server still loads. */
+interface DrawerSettings {
+  requireDrawerSession?: boolean;
+  blindCashCount?: boolean;
+  cashVarianceAlertCents?: number;
+}
+
+/** Owner-only store settings: dual pricing, cash drawer rules, label printer, receipt text. */
 export function StoreSettingsScreen({ onSaved }: { onSaved: (l: Location) => void }) {
   const { location } = useSession();
   const can = useCan();
+  const drawer = location as Location & DrawerSettings;
+  const [requireDrawer, setRequireDrawer] = useState(drawer.requireDrawerSession ?? false);
+  const [blindCount, setBlindCount] = useState(drawer.blindCashCount ?? true);
+  const [varianceAlert, setVarianceAlert] = useState(((drawer.cashVarianceAlertCents ?? 500) / 100).toFixed(2));
   const [dual, setDual] = useState(location.cardPriceBps > 0);
   const [percent, setPercent] = useState(location.cardPriceBps > 0 ? String(location.cardPriceBps / 100) : "3.99");
   const [printer, setPrinter] = useState(location.labelPrinterHost ?? "");
@@ -20,7 +31,9 @@ export function StoreSettingsScreen({ onSaved }: { onSaved: (l: Location) => voi
   const [cardPriced, setCardPriced] = useState<string[]>(location.cardPricedTenders ?? []);
 
   const bps = dual ? Math.round(Number(percent) * 100) : 0;
-  const valid = !dual || (Number.isFinite(bps) && bps > 0 && bps <= 1000);
+  const alertCents = Math.round(Number(varianceAlert) * 100);
+  const alertValid = varianceAlert.trim() !== "" && Number.isFinite(alertCents) && alertCents >= 0;
+  const valid = (!dual || (Number.isFinite(bps) && bps > 0 && bps <= 1000)) && alertValid;
 
   async function save() {
     try {
@@ -30,6 +43,9 @@ export function StoreSettingsScreen({ onSaved }: { onSaved: (l: Location) => voi
         labelPrinterHost: printer.trim() || null,
         receiptHeader: header.trim() || null,
         receiptFooter: footer.trim() || null,
+        requireDrawerSession: requireDrawer,
+        blindCashCount: blindCount,
+        cashVarianceAlertCents: alertCents,
       });
       onSaved(updated);
       setMessage("Saved. Reprint shelf labels so they show the new prices.");
@@ -84,6 +100,25 @@ export function StoreSettingsScreen({ onSaved }: { onSaved: (l: Location) => voi
             <Text style={ui.muted}>Check your state's rules and your card processing agreement before turning this on.</Text>
           </>
         )}
+      </View>
+
+      <View style={[ui.panel, { gap: 12 }]}>
+        <Text style={ui.h2}>Cash drawer</Text>
+        <View style={[ui.row, { justifyContent: "space-between", gap: 12 }]}>
+          <Text style={[ui.text, { flex: 1 }]}>Cash must go into an open drawer (start a shift before cash sales)</Text>
+          <Switch value={requireDrawer} onValueChange={setRequireDrawer} />
+        </View>
+        <Text style={ui.muted}>Off means cash sales work without a drawer session; on, the register asks for a float first so every dollar is accounted for at close.</Text>
+        <View style={[ui.row, { justifyContent: "space-between", gap: 12 }]}>
+          <Text style={[ui.text, { flex: 1 }]}>Blind closing count</Text>
+          <Switch value={blindCount} onValueChange={setBlindCount} />
+        </View>
+        <Text style={ui.muted}>The expected amount stays hidden until the cashier has entered their count.</Text>
+        <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
+          <Text style={ui.text}>Alert when the count is off by more than $</Text>
+          <TextInput style={[ui.input, { width: 100 }]} keyboardType="decimal-pad" value={varianceAlert} onChangeText={setVarianceAlert} />
+        </View>
+        {alertValid ? <Text style={ui.muted}>A bigger variance needs a manager's PIN to close the drawer, and is flagged on the daily close.</Text> : <Text style={ui.error}>Enter a dollar amount (0 flags every variance).</Text>}
       </View>
 
       <View style={[ui.panel, { gap: 8 }]}>

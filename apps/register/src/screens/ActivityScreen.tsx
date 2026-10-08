@@ -21,7 +21,8 @@ interface Event {
 /** Chip key, label, and the /audit query. `action` takes a comma-separated list. */
 const FILTERS: [string, string, Record<string, string>][] = [
   ["all", "All events", { kind: "events" }],
-  ["drawer", "Cash drawer", { action: "NO_SALE,DRAWER_OPEN" }],
+  ["drawer", "Cash drawer", { action: "NO_SALE,DRAWER_OPEN,DRAWER_OPENED,DRAWER_CLOSED,CASH_PAID_IN,CASH_PAID_OUT,CASH_DROP" }],
+  ["timeclock", "Time clock", { action: "TIME_CLOCK_IN,TIME_CLOCK_OUT,TIME_CLOCK_FAILED,TIME_ENTRY_CREATED,TIME_ENTRY_EDITED,TIME_ENTRY_DELETED" }],
   ["clear", "Cart deletes", { action: "CART_CLEAR" }],
   ["void", "Voided items", { action: "LINE_VOID" }],
   ["discount", "Discounts", { action: "DISCOUNT" }],
@@ -62,6 +63,8 @@ const REFUSAL: Record<string, string> = {
   LOCKED_OUT: "locked out after too many wrong PINs",
   APPROVER_NOT_ALLOWED: "that manager isn't allowed to approve this",
   APPROVER_LIMIT: "over that manager's discount limit",
+  ALREADY_CLOCKED_IN: "already clocked in",
+  NOT_CLOCKED_IN: "not clocked in",
 };
 const BALANCE_KIND: Record<string, string> = { STORE_CREDIT: "store credit", POINTS: "points", CASHBACK: "rewards" };
 
@@ -88,6 +91,30 @@ const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n ==
 const count = (x: unknown) => (Array.isArray(x) ? x.length : Number(x) || 0);
 /** "CASH_SALE" → "cash sale". */
 const words = (x: unknown) => String(x ?? "").replace(/_/g, " ").toLowerCase();
+/** "7 h 58 m". */
+const hm = (m: unknown) => {
+  const n = Math.max(0, Math.round(Number(m) || 0));
+  return `${Math.floor(n / 60)} h ${n % 60} m`;
+};
+/** A clock time, with its date when it isn't today: "5:02 PM" or "10/7/2026, 5:02 PM". */
+const clock = (iso: unknown) => {
+  const d = new Date(String(iso ?? ""));
+  if (Number.isNaN(d.getTime())) return String(iso ?? "none");
+  return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : d.toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+};
+/** "Sam's" — the employee whose time entry a manager touched. */
+const whose = (d: any) => (d.targetName ?? d.staffName ?? d.name ? `${d.targetName ?? d.staffName ?? d.name}'s` : "an employee's");
+/** Time entry edits as "clock out 5:02 PM → 5:30 PM, break 0 → 30 min". */
+const timeChanges = (c: unknown): string[] => {
+  if (!isObject(c)) return [];
+  const TIME: Record<string, string> = { clockIn: "clock in", clockOut: "clock out" };
+  return Object.entries(c).map(([k, v]) => {
+    const [from, to] = isObject(v) && ("from" in v || "to" in v) ? [v.from, v.to] : Array.isArray(v) ? [v[0], v[1]] : [undefined, v];
+    if (TIME[k]) return `${TIME[k]} ${from == null ? "none" : clock(from)} → ${to == null ? "none" : clock(to)}`;
+    if (k === "breakMinutes") return `break ${Number(from) || 0} → ${Number(to) || 0} min`;
+    return `${label(k)}: ${fmt(k, from)} → ${fmt(k, to)}`;
+  });
+};
 /** Permission labels, e.g. "Refund sales, Give manual discounts". */
 const perms = (list: unknown) =>
   (Array.isArray(list) ? list : [list])
@@ -170,6 +197,19 @@ function describe(e: Event): string {
       return d.trigger === "reprint" && d.orderNumber ? `Opened the cash drawer on a reprint of sale #${d.orderNumber}` : "Opened the cash drawer (no sale)";
     case "DRAWER_OPEN":
       return d.orderNumber ? `Opened the cash drawer for ${d.trigger === "cash_sale" ? "cash " : ""}sale #${d.orderNumber}` : "Opened the cash drawer";
+    case "DRAWER_OPENED":
+      return `Started drawer #${d.number} with ${money(d.openingFloatCents ?? d.floatCents)}${d.register ? ` on ${d.register}` : ""}`;
+    case "DRAWER_CLOSED": {
+      const v = Number(d.varianceCents) || 0;
+      const off = v === 0 ? "exact" : v < 0 ? `short ${money(-v)}` : `over ${money(v)}`;
+      return `Closed drawer #${d.number}: expected ${money(d.expectedCents ?? d.expectedCashCents)}, counted ${money(d.countedCents ?? d.countedCashCents)}, ${off}`;
+    }
+    case "CASH_PAID_IN":
+      return `Paid in ${money(d.amountCents)}${d.reason ? ` (${d.reason})` : ""}${d.number ? ` — drawer #${d.number}` : ""}`;
+    case "CASH_PAID_OUT":
+      return `Paid out ${money(d.amountCents)}${d.reason ? ` (${d.reason})` : ""}${d.number ? ` — drawer #${d.number}` : ""}`;
+    case "CASH_DROP":
+      return `Safe drop ${money(d.amountCents)}${d.reason ? ` (${d.reason})` : ""}${d.number ? ` — drawer #${d.number}` : ""}`;
     case "CART_CLEAR":
       return `Deleted a cart worth ${money(d.valueCents)}: ${items}`;
     case "LINE_VOID":
@@ -204,6 +244,19 @@ function describe(e: Event): string {
     }
     case "PASSWORD_CHANGED":
       return "Changed their website password";
+    // Time clock
+    case "TIME_CLOCK_IN":
+      return `Clocked in${d.source === "web" ? " (website)" : ""}`;
+    case "TIME_CLOCK_OUT":
+      return `Clocked out${d.minutes != null ? ` (${hm(d.minutes)})` : ""}`;
+    case "TIME_CLOCK_FAILED":
+      return `Time clock refused: ${REFUSAL[d.reason] ?? (d.reason ? words(d.reason) : "unknown PIN")}`;
+    case "TIME_ENTRY_CREATED":
+      return `Added ${whose(d)} time entry: ${clock(d.clockIn)} → ${d.clockOut ? clock(d.clockOut) : "still on the clock"}${d.breakMinutes ? `, ${d.breakMinutes} min break` : ""}${d.note ? ` (${d.note})` : ""}`;
+    case "TIME_ENTRY_EDITED":
+      return `Edited ${whose(d)} time entry: ${timeChanges(d.changes).join(", ") || "updated"}`;
+    case "TIME_ENTRY_DELETED":
+      return `Deleted ${whose(d)} time entry${d.clockIn ? ` from ${clock(d.clockIn)}` : ""}${d.minutes != null ? ` (${hm(d.minutes)})` : ""}`;
     // Money
     case "BALANCE_ADJUSTED": {
       const points = d.kind === "POINTS";

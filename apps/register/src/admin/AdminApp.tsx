@@ -20,9 +20,11 @@ import { Inventory } from "./pages/Inventory";
 import { Orders } from "./pages/Orders";
 import { Purchasing } from "./pages/Purchasing";
 import { Reports } from "./pages/Reports";
+import { Shifts } from "./pages/Shifts";
+import { Timesheets } from "./pages/Timesheets";
 import { Transfers } from "./pages/Transfers";
 
-type PageId = "dashboard" | "orders" | "reports" | "products" | "brands" | "purchase-orders" | "vendors" | "purchase-report" | "transfers" | "transfer-report" | "customers" | "employees" | "deals" | "loyalty" | "store" | "activity";
+type PageId = "dashboard" | "orders" | "shifts" | "reports" | "products" | "brands" | "purchase-orders" | "vendors" | "purchase-report" | "transfers" | "transfer-report" | "customers" | "employees" | "timesheets" | "deals" | "loyalty" | "store" | "activity";
 
 interface NavItem {
   id: PageId;
@@ -38,7 +40,7 @@ interface NavGroup {
 
 const NAV: NavGroup[] = [
   { items: [{ id: "dashboard", label: "Dashboard", perms: ["VIEW_REPORTS"] }] },
-  { label: "Sales", items: [{ id: "orders", label: "Orders", perms: ["VIEW_REPORTS", "REFUND"] }, { id: "reports", label: "Reports", perms: ["VIEW_REPORTS"] }] },
+  { label: "Sales", items: [{ id: "orders", label: "Orders", perms: ["VIEW_REPORTS", "REFUND"] }, { id: "shifts", label: "Shifts", perms: ["VIEW_REPORTS", "DRAWER_OPEN_CLOSE"] }, { id: "reports", label: "Reports", perms: ["VIEW_REPORTS"] }] },
   { label: "Inventory", items: [{ id: "products", label: "Products", perms: ["MANAGE_CATALOG", "INVENTORY_ADJUST"] }, { id: "brands", label: "Brands", perms: ["MANAGE_CATALOG"] }] },
   {
     label: "Purchase",
@@ -50,7 +52,7 @@ const NAV: NavGroup[] = [
   },
   { label: "Transfers", items: [{ id: "transfers", label: "Transfers", perms: ["MANAGE_TRANSFERS", "RECEIVE_STOCK"] }, { id: "transfer-report", label: "Transfer Report", perms: ["VIEW_REPORTS"] }] },
   { items: [{ id: "customers", label: "Customers", perms: ["MANAGE_CUSTOMERS", "ADJUST_BALANCES"] }] },
-  { items: [{ id: "employees", label: "Employees", perms: ["MANAGE_STAFF"] }] },
+  { label: "Employees", items: [{ id: "employees", label: "Employees", perms: ["MANAGE_STAFF"] }, { id: "timesheets", label: "Timesheets", perms: ["MANAGE_TIMESHEETS", "VIEW_REPORTS"] }] },
   { label: "Marketing", items: [{ id: "deals", label: "Deals", perms: ["MANAGE_DEALS"] }, { id: "loyalty", label: "Loyalty", perms: ["MANAGE_LOYALTY"] }] },
   { label: "Settings", items: [{ id: "store", label: "Store", perms: ["MANAGE_SETTINGS"] }, { id: "activity", label: "Activity log", perms: ["VIEW_REPORTS"] }] },
 ];
@@ -58,6 +60,7 @@ const NAV: NavGroup[] = [
 const PAGES: Record<PageId, (ctx: { onLocationSaved: (l: Location) => void }) => ReactElement> = {
   dashboard: () => <Dashboard />,
   orders: () => <Orders />,
+  shifts: () => <Shifts />,
   reports: () => <Reports />,
   products: () => <Inventory view="items" />,
   brands: () => <Inventory view="brands" />,
@@ -68,6 +71,7 @@ const PAGES: Record<PageId, (ctx: { onLocationSaved: (l: Location) => void }) =>
   "transfer-report": () => <Reports initial="transfers" />,
   customers: () => <Customers />,
   employees: () => <StaffScreen />,
+  timesheets: () => <Timesheets />,
   deals: () => <DealsScreen />,
   loyalty: () => <LoyaltySettingsScreen />,
   store: ({ onLocationSaved }) => <StoreSettingsScreen onSaved={onLocationSaved} />,

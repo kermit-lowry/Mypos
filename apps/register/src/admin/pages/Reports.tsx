@@ -5,9 +5,9 @@ import { api, ApiError, getToken, type Brand, type Vendor } from "../../api";
 import { Button } from "../../components/Button";
 import { useSession } from "../../session";
 import { ui } from "../../theme";
-import { Card, Chips, DateRangePicker, day, downloadCsv, money, pct, Picker, PRESETS, Table, when, type Column, type DateRange } from "../ui";
+import { Badge, Card, Chips, DateRangePicker, day, downloadCsv, money, pct, Picker, PRESETS, Table, when, type Column, type DateRange } from "../ui";
 
-export type Report = "summary" | "period" | "category" | "kind" | "employee" | "product" | "brand" | "game" | "vendor" | "tenders" | "discounts" | "tax" | "trade-ins" | "no-sales" | "valuation" | "low-stock" | "movements" | "purchases" | "transfers";
+export type Report = "summary" | "period" | "category" | "kind" | "employee" | "product" | "brand" | "game" | "vendor" | "tenders" | "discounts" | "tax" | "trade-ins" | "no-sales" | "valuation" | "low-stock" | "movements" | "purchases" | "transfers" | "daily-close" | "shifts" | "timesheets" | "employee-shifts";
 
 /** Chips in the order they're shown, under a small heading per group. */
 const GROUPS: [string, [Report, string][]][] = [
@@ -15,6 +15,7 @@ const GROUPS: [string, [Report, string][]][] = [
   ["Items", [["product", "Top items"], ["category", "By category"], ["kind", "By product type"], ["brand", "By brand"], ["game", "By game"], ["vendor", "By vendor"]]],
   ["Stock", [["no-sales", "Dead stock"], ["valuation", "Inventory value"], ["low-stock", "Low stock"], ["movements", "Stock movements"]]],
   ["Purchasing", [["purchases", "Purchases"], ["transfers", "Transfers"]]],
+  ["Staff & cash", [["daily-close", "Daily close"], ["shifts", "Shifts"], ["timesheets", "Timesheets"], ["employee-shifts", "Sales by shift"]]],
 ];
 const REPORTS = GROUPS.flatMap(([, r]) => r);
 /** Reports the server narrows by brand / vendor / category / product type. */
@@ -28,6 +29,11 @@ interface ItemFilter {
   kind: string;
 }
 const NO_FILTER: ItemFilter = { brandId: "", vendorId: "", categoryId: "", kind: "" };
+
+/** Local "YYYY-MM-DD" (toISOString would give the UTC day). */
+const localDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+/** "short $2.50" / "over $1.00" / "exact". */
+const variance = (c: number | null | undefined) => (c == null ? "" : c === 0 ? "exact" : c < 0 ? `short ${money(-c)}` : `over ${money(c)}`);
 
 const label = (k: string) => k.replace(/Cents$/, "").replace(/Bps$/, "").replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase());
 const fmt = (k: string, v: unknown) => (k.endsWith("Cents") ? money(v as number) : k.endsWith("Bps") ? pct(v as number) : typeof v === "object" && v ? JSON.stringify(v) : String(v ?? ""));
@@ -80,6 +86,10 @@ export function Reports({ initial = "summary" }: { initial?: Report }) {
       case "movements": return `/reports/stock-movements${q(dates, loc)}`;
       case "purchases": return `/reports/purchases${q(dates, loc)}`;
       case "transfers": return `/reports/transfers${q(dates, loc)}`;
+      case "daily-close": return `/reports/daily-close${q(`date=${localDay(range.from)}`, loc)}`;
+      case "shifts": return `/reports/shifts${q(dates, loc)}`;
+      case "timesheets": return `/reports/timesheets${q(dates, loc)}`;
+      case "employee-shifts": return `/reports/employee-shifts${q(dates, loc)}`;
       default: return `/reports/sales-by/${report}${q(dates, loc, "limit=500")}`;
     }
   };
@@ -130,7 +140,7 @@ export function Reports({ initial = "summary" }: { initial?: Report }) {
   );
 }
 
-function KeyValues({ obj }: { obj: Record<string, unknown> }) {
+export function KeyValues({ obj }: { obj: Record<string, unknown> }) {
   return (
     <View style={{ gap: 4 }}>
       {Object.entries(obj)
@@ -250,6 +260,103 @@ function ReportView({ report, data, filters, by }: { report: Report; data: any; 
         </Card>
       );
     }
+    case "daily-close":
+      return (
+        <>
+          <Card title={`Daily close · ${data.date}${data.totals?.open ? ` · ${data.totals.open} drawer${data.totals.open === 1 ? "" : "s"} still open` : ""}`}>
+            <KeyValues obj={data.totals ?? {}} />
+          </Card>
+          <Card title="Drawers">
+            <Table<any>
+              rows={data.sessions ?? []}
+              keyOf={(r) => r.id}
+              columns={[
+                { key: "n", label: "Drawer #", render: (r) => `#${r.number}`, width: 80 },
+                { key: "r", label: "Register", render: (r) => r.register ?? (r.terminalId ? "Register" : "Main drawer"), width: 120 },
+                { key: "s", label: "Status", render: (r) => <Badge text={String(r.status).toLowerCase()} tone={r.status === "OPEN" ? "warn" : "good"} />, width: 80 },
+                { key: "ob", label: "Opened by", render: (r) => r.openedBy ?? "", width: 120 },
+                { key: "cb", label: "Closed by", render: (r) => r.closedBy ?? "", width: 120 },
+                { key: "f", label: "Float", render: (r) => money(r.floatCents), width: 90, align: "right" },
+                { key: "cs", label: "Cash sales", render: (r) => money(r.cashSalesCents), width: 100, align: "right" },
+                { key: "pi", label: "Paid in", render: (r) => money(r.paidInCents), width: 90, align: "right" },
+                { key: "po", label: "Paid out", render: (r) => money(r.paidOutCents), width: 90, align: "right" },
+                { key: "dr", label: "Drops", render: (r) => money(r.dropCents), width: 90, align: "right" },
+                { key: "e", label: "Expected", render: (r) => money(r.expectedCents), width: 90, align: "right" },
+                { key: "c", label: "Counted", render: (r) => money(r.countedCents), width: 90, align: "right" },
+                { key: "v", label: "Variance", render: (r) => variance(r.varianceCents), width: 110, align: "right" },
+                { key: "a", label: "Approved by", render: (r) => r.approvedBy ?? "", width: 120 },
+              ]}
+              empty="No drawers were opened on this day."
+            />
+          </Card>
+          <Card title="Sales"><KeyValues obj={data.sales ?? {}} /></Card>
+          <Card title="Payment types"><Table<any> rows={data.tenders ?? []} keyOf={(r) => r.tender} columns={[{ key: "t", label: "Tender", render: (r) => r.tender.replace("_", " "), width: 160 }, { key: "c", label: "Count", render: (r) => r.count, width: 70, align: "right" }, { key: "n", label: "Net", render: (r) => money(r.netCents), width: 110, align: "right" }]} empty="No payments." /></Card>
+        </>
+      );
+    case "shifts":
+      return (
+        <Card title={`Shifts${data.totals ? ` · ${data.totals.sessions} closed · variance ${variance(data.totals.varianceCents) || "—"}` : ""}`}>
+          <Table<any>
+            rows={data.rows ?? data}
+            keyOf={(r) => r.id ?? String(r.number)}
+            columns={[
+              { key: "n", label: "Drawer #", render: (r) => `#${r.number}`, width: 80 },
+              { key: "r", label: "Register", render: (r) => r.register ?? "", width: 120 },
+              { key: "ob", label: "Opened by", render: (r) => r.openedBy ?? "", width: 120 },
+              { key: "oa", label: "Opened", render: (r) => (r.openedAt ? when(r.openedAt) : ""), width: 160 },
+              { key: "cb", label: "Closed by", render: (r) => r.closedBy ?? "", width: 120 },
+              { key: "ca", label: "Closed", render: (r) => (r.closedAt ? when(r.closedAt) : ""), width: 160 },
+              { key: "f", label: "Float", render: (r) => money(r.floatCents), width: 90, align: "right" },
+              { key: "cs", label: "Cash sales", render: (r) => money(r.cashSalesCents), width: 100, align: "right" },
+              { key: "cr", label: "Cash refunds", render: (r) => money(r.cashRefundsCents), width: 100, align: "right" },
+              { key: "ti", label: "Trade-in cash", render: (r) => money(r.tradeInCashCents), width: 100, align: "right" },
+              { key: "pi", label: "Paid in", render: (r) => money(r.paidInCents), width: 90, align: "right" },
+              { key: "po", label: "Paid out", render: (r) => money(r.paidOutCents), width: 90, align: "right" },
+              { key: "dr", label: "Drops", render: (r) => money(r.dropCents), width: 90, align: "right" },
+              { key: "e", label: "Expected", render: (r) => money(r.expectedCents), width: 90, align: "right" },
+              { key: "c", label: "Counted", render: (r) => money(r.countedCents), width: 90, align: "right" },
+              { key: "v", label: "Variance", render: (r) => variance(r.varianceCents), width: 110, align: "right" },
+              { key: "a", label: "Approved by", render: (r) => r.approvedBy ?? "", width: 120 },
+            ]}
+            empty="No drawer sessions in this range."
+          />
+        </Card>
+      );
+    case "timesheets":
+      return (
+        <Card title="Timesheets">
+          <Table<any>
+            rows={data.employees ?? data.staff ?? []}
+            keyOf={(r) => r.staffId}
+            columns={[
+              { key: "n", label: "Employee", render: (r) => r.name, width: 180 },
+              { key: "e", label: "Entries", render: (r) => r.entries, width: 70, align: "right" },
+              { key: "h", label: "Hours", render: (r) => Number(r.hours ?? 0).toFixed(2), width: 80, align: "right" },
+              { key: "o", label: "Now", render: (r) => (r.openNow ? <Badge text="on the clock" tone={r.long ? "warn" : "good"} /> : ""), width: 120 },
+            ]}
+            empty="No time entries in this range."
+          />
+        </Card>
+      );
+    case "employee-shifts":
+      return (
+        <Card title="Sales by shift">
+          <Table<any>
+            rows={data}
+            keyOf={(r) => r.id ?? `${r.staff ?? r.name}-${r.clockIn}`}
+            columns={[
+              { key: "n", label: "Employee", render: (r) => r.staff ?? r.name ?? "", width: 150 },
+              { key: "i", label: "Clock in", render: (r) => when(r.clockIn), width: 160 },
+              { key: "o", label: "Clock out", render: (r) => (r.clockOut ? when(r.clockOut) : "open"), width: 160 },
+              { key: "h", label: "Hours", render: (r) => (Number(r.minutes ?? 0) / 60).toFixed(2), width: 70, align: "right" },
+              { key: "s", label: "Sales", render: (r) => r.orders, width: 60, align: "right" },
+              { key: "u", label: "Units", render: (r) => r.units, width: 60, align: "right" },
+              { key: "v", label: "Net", render: (r) => money(r.netCents), width: 100, align: "right" },
+            ]}
+            empty="No shifts in this range."
+          />
+        </Card>
+      );
     default:
       return <Card title={t(REPORTS.find((r) => r[0] === report)?.[1] ?? "Report")}><Table<any> rows={data} keyOf={(r) => r.key} columns={byDim} /></Card>;
   }
