@@ -40,6 +40,13 @@ export class MockGateway implements PaymentGateway {
     return { approved: true, gatewayRef };
   }
 
+  readonly printed: { html: string; terminal: string }[] = [];
+
+  async printReceipt(html: string, terminal: { ref: string }): Promise<GatewayResult> {
+    this.printed.push({ html, terminal: terminal.ref });
+    return { approved: true };
+  }
+
   async lookup(gatewayRef: string): Promise<GatewayResult> {
     this.calls.push({ op: "lookup", ref: gatewayRef });
     return { gatewayRef, ...this.lookupResult };

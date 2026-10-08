@@ -1,5 +1,5 @@
 import { Prisma, type ProductKind } from "@prisma/client";
-import { applyBps, cartTotals, earnFor, type CheckoutInput, type TenderType } from "@mypos/shared";
+import { applyBps, cardAdjustment, cardAmountDue, dualTotals, earnFor, isCardPriced, type CheckoutInput, type TenderType } from "@mypos/shared";
 import type { Tx } from "../db.js";
 import { AppError, badRequest, conflict, forbidden, notFound, paymentFailed } from "../errors.js";
 import { config } from "../config.js";
@@ -88,14 +88,26 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
   const rewardDiscounts = redemption.discounts;
   priced.forEach((p, i) => (p.discountCents += rewardDiscounts[i]!));
 
-  const totals = cartTotals(priced, location.taxRateBps);
+  // Cash-price totals are the order's base; card tenders pay the card price.
+  const dual = dualTotals(priced, location.taxRateBps, location.cardPriceBps);
+  const totals = dual.cash;
 
   // ── Validate tenders ───────────────────────────────────────
+  // Preorder deposits were collected at their stated amount and count at the cash price.
   const deposit = opts.preorder?.depositCents ?? 0;
-  const tendered = input.tenders.reduce((a, t) => a + t.amountCents, 0) + deposit;
-  if (tendered !== totals.totalCents) {
-    throw badRequest("TENDER_MISMATCH", "Tenders must equal the order total", { totalCents: totals.totalCents, tenderedCents: tendered });
+  const cashPricedPaid = input.tenders.filter((t) => !isCardPriced(t.type)).reduce((a, t) => a + t.amountCents, 0) + deposit;
+  const cardPaid = input.tenders.filter((t) => isCardPriced(t.type)).reduce((a, t) => a + t.amountCents, 0);
+  const cardDue = cardAmountDue(dual, cashPricedPaid);
+  if (cashPricedPaid > totals.totalCents || cardPaid !== cardDue) {
+    throw badRequest("TENDER_MISMATCH", "Tenders must equal the order total", {
+      cashTotalCents: dual.cash.totalCents,
+      cardTotalCents: dual.card.totalCents,
+      cashPricedPaidCents: cashPricedPaid,
+      cardDueCents: cardDue,
+      cardPaidCents: cardPaid,
+    });
   }
+  const adjustment = cardAdjustment(dual, cardPaid, cashPricedPaid);
   let changeCents = 0;
   for (const t of input.tenders) {
     if (opts.allowedTenders && !opts.allowedTenders.includes(t.type)) throw badRequest("TENDER_NOT_ALLOWED", `${t.type} not accepted here`);
@@ -290,6 +302,10 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
         where: { id: order.id },
         data: {
           status: "PAID",
+          cardAdjustmentCents: adjustment.adjustmentCents,
+          cardAdjustmentTaxCents: adjustment.taxCents,
+          cardPriceBps: location.cardPriceBps,
+          cardTotalCents: dual.card.totalCents,
           loyaltyEarned,
           loyaltyUnit: loyaltyEarned > 0 ? unitFor(program) : null,
           loyaltyEligibleCents,

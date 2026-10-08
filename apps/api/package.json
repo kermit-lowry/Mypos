@@ -20,6 +20,7 @@
     "@mypos/shared": "workspace:*",
     "@prisma/client": "6.19.3",
     "bcryptjs": "3.0.3",
+    "bwip-js": "4.5.1",
     "fastify": "5.12.5",
     "zod": "3.25.76"
   },

@@ -42,6 +42,11 @@ export class RoutingGateway implements PaymentGateway {
     return { ...(await g.lookup(gatewayRef, opts)), gateway: g.name };
   }
 
+  async printReceipt(html: string, terminal: TerminalRef): Promise<GatewayResult> {
+    if (!this.cardPresent?.printReceipt) return { approved: false, message: "This terminal can't print receipts" };
+    return this.cardPresent.printReceipt(html, terminal);
+  }
+
   async listTerminals(): Promise<TerminalRef[]> {
     const g = this.cardPresent as (PaymentGateway & { listTerminals?: () => Promise<TerminalRef[]> }) | undefined;
     if (!g?.listTerminals) throw new Error("No card terminal processor is configured");

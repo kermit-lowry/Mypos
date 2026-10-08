@@ -16,6 +16,7 @@
     "expo": "54.0.37",
     "expo-camera": "~17.0.10",
     "expo-crypto": "~15.0.9",
+    "expo-print": "~15.0.8",
     "expo-secure-store": "~15.0.8",
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",

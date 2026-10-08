@@ -1,4 +1,4 @@
-import { CartLine, LoyaltyProgramInput, RewardInput, cartTotals, earnFor } from "@mypos/shared";
+import { CartLine, LoyaltyProgramInput, RewardInput, dualTotals, earnFor } from "@mypos/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { badRequest, notFound } from "../errors.js";
@@ -92,10 +92,12 @@ export function loyaltyRoutes(app: FastifyInstance, base: Ctx) {
     });
     const { discounts, pointsCost } = await priceRewards(prisma, program, lines, input.rewardIds);
     const final = lines.map((l, i) => ({ ...l, discountCents: l.discountCents + discounts[i]! }));
-    const totals = cartTotals(final, location.taxRateBps);
+    const dual = dualTotals(final, location.taxRateBps, location.cardPriceBps);
+    const totals = dual.cash;
     const eligible = final.reduce((a, l) => a + (earns(program, l.kind) ? l.unitPriceCents * l.quantity - l.discountCents : 0), 0);
     return {
       ...totals,
+      card: dual.card,
       rewardDiscounts: discounts,
       pointsCost,
       earn: input.customerId ? { unit: unitFor(program), amount: earnFor(program, eligible, totals.totalCents, input.creditPaidCents) } : null,

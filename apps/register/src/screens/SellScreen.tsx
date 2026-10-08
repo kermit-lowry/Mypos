@@ -1,13 +1,15 @@
-import { cartTotals, formatCents, type TenderInput } from "@mypos/shared";
+import { cardAmountDue, cardPrice, dualTotals, formatBps, formatCents, isCardPriced, type DualTotals, type TenderInput } from "@mypos/shared";
 import * as Crypto from "expo-crypto";
+import * as Print from "expo-print";
 import { useEffect, useMemo, useState } from "react";
 import { Alert, FlatList, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { api, ApiError, type Customer, type LoyaltyProgram, type LoyaltyQuote, type Product, type Variant } from "../api";
+import { api, ApiError, apiText, type Customer, type LoyaltyProgram, type LoyaltyQuote, type Product, type Variant } from "../api";
 import { Button } from "../components/Button";
 import { CustomerPicker } from "../components/CustomerPicker";
 import { ProductSearch, variantLabel } from "../components/ProductSearch";
 import { RewardsPicker } from "../components/RewardsPicker";
 import { TerminalPicker, useTerminal } from "../components/TerminalPicker";
+import { displayChannel, publishDisplay } from "../display";
 import { isManager, useSession } from "../session";
 import { colors, ui } from "../theme";
 
@@ -35,14 +37,19 @@ export function SellScreen() {
     api<LoyaltyProgram>("GET", "/loyalty/program").then(setProgram).catch(() => setProgram(null));
   }, []);
 
+  const bps = location.cardPriceBps;
   const localTotals = useMemo(
     () =>
-      cartTotals(
+      dualTotals(
         lines.map((l) => ({ unitPriceCents: l.variant.priceCents, quantity: l.quantity, discountCents: l.discountCents, taxable: l.variant.taxable })),
         location.taxRateBps,
+        bps,
       ),
-    [lines, location.taxRateBps],
+    [lines, location.taxRateBps, bps],
   );
+  const terminalState = useTerminal();
+  const channel = displayChannel(location.id, terminalState.terminal?.id);
+  const [payState, setPayState] = useState<PayState>(null);
 
   // With a customer attached, the server prices rewards and previews what the sale earns.
   const loyaltyOn = !!program?.enabled && !!customer;
@@ -66,7 +73,8 @@ export function SellScreen() {
     };
   }, [loyaltyOn, lines, rewardIds, customer, location.id]);
 
-  const totals = quote ?? localTotals;
+  const dual: DualTotals = useMemo(() => (quote ? { cash: quote, card: quote.card } : localTotals), [quote, localTotals]);
+  const totals = dual.cash;
   const quoteReady = rewardIds.length === 0 || (!!quote && !quoteError);
 
   function add(product: Product, variant: Variant) {
@@ -100,7 +108,37 @@ export function SellScreen() {
     setCustomer(null);
     setRewardIds([]);
     setTendering(false);
+    setPayState(null);
   }
+
+  // Mirror the sale to the customer-facing display.
+  useEffect(() => {
+    if (payState?.done) {
+      publishDisplay(channel, { state: "DONE", storeName: location.name, totalCents: payState.done.totalCents, changeCents: payState.done.changeCents });
+      return;
+    }
+    if (lines.length === 0) {
+      publishDisplay(channel, { state: "IDLE", storeName: location.name });
+      return;
+    }
+    publishDisplay(channel, {
+      state: tendering ? "PAYING" : "CART",
+      storeName: location.name,
+      cardPercent: bps > 0 ? formatBps(bps) : null,
+      lines: lines.map((l) => ({
+        title: l.product.title,
+        detail: variantLabel(l.variant),
+        quantity: l.quantity,
+        cashCents: l.variant.priceCents * l.quantity - l.discountCents,
+        cardCents: cardPrice(l.variant.priceCents, bps) * l.quantity - (l.discountCents ? cardPrice(l.discountCents, bps) : 0),
+      })),
+      cash: dual.cash,
+      card: dual.card,
+      due: tendering && payState?.due ? payState.due : undefined,
+      customer: customer ? { name: customer.name, points: customer.loyalty?.points, rewardsCents: customer.loyalty?.rewardsCents } : null,
+      earn: quote?.earn && quote.earn.amount > 0 ? (quote.earn.unit === "POINTS" ? `${quote.earn.amount.toLocaleString()} points` : `${formatCents(quote.earn.amount)} rewards`) : null,
+    });
+  }, [channel, lines, dual, tendering, payState, customer, quote, bps, location.name]);
 
   return (
     <View style={{ flex: 1, flexDirection: "row", gap: 16, padding: 16 }}>
@@ -136,6 +174,11 @@ export function SellScreen() {
                 </Text>
                 <Text style={ui.text}>{formatCents(l.variant.priceCents * l.quantity - l.discountCents)}</Text>
               </View>
+              {bps > 0 && (
+                <Text style={[ui.muted, { textAlign: "right" }]}>
+                  Card {formatCents(cardPrice(l.variant.priceCents, bps) * l.quantity - (l.discountCents ? cardPrice(l.discountCents, bps) : 0))}
+                </Text>
+              )}
               <Text style={ui.muted}>{variantLabel(l.variant)}</Text>
               <View style={[ui.row, { gap: 8, marginTop: 6 }]}>
                 <Button title="−" kind="secondary" onPress={() => setQty(l.variant.id, l.quantity - 1)} style={{ minHeight: 36, paddingVertical: 6 }} />
@@ -158,7 +201,14 @@ export function SellScreen() {
           <Row label="Subtotal" value={totals.subtotalCents} />
           {totals.discountCents > 0 && <Row label={rewardIds.length ? "Discounts & rewards" : "Discounts"} value={-totals.discountCents} />}
           <Row label={`Tax (${(location.taxRateBps / 100).toFixed(2)}%)`} value={totals.taxCents} />
-          <Row label="Total" value={totals.totalCents} big />
+          {bps > 0 ? (
+            <>
+              <Row label="Cash price" value={dual.cash.totalCents} big />
+              <Row label={`Card price (+${formatBps(bps)})`} value={dual.card.totalCents} big />
+            </>
+          ) : (
+            <Row label="Total" value={totals.totalCents} big />
+          )}
           {quote?.earn && quote.earn.amount > 0 && (
             <Text style={[ui.muted, { color: colors.good }]}>
               Earns {quote.earn.unit === "POINTS" ? `${quote.earn.amount.toLocaleString()} pts` : `${formatCents(quote.earn.amount)} rewards`}
@@ -168,7 +218,7 @@ export function SellScreen() {
         </View>
         <View style={[ui.row, { gap: 8 }]}>
           <Button title="Clear" kind="secondary" onPress={reset} disabled={!lines.length} />
-          <Button title={`Charge ${formatCents(totals.totalCents)}`} kind="good" onPress={() => setTendering(true)} disabled={!lines.length || !quoteReady} style={{ flex: 1 }} />
+          <Button title="Charge" kind="good" onPress={() => setTendering(true)} disabled={!lines.length || !quoteReady} style={{ flex: 1 }} />
         </View>
         {!isManager(staff) && <Text style={ui.muted}>Price overrides and refunds need a manager.</Text>}
       </View>
@@ -179,7 +229,10 @@ export function SellScreen() {
 
       {tendering && (
         <TenderSheet
-          totalCents={totals.totalCents}
+          dual={dual}
+          bps={bps}
+          terminalState={terminalState}
+          onState={setPayState}
           customer={customer}
           onCancel={() => setTendering(false)}
           submit={(tenders, idempotencyKey) =>
@@ -208,27 +261,47 @@ function Row({ label, value, big }: { label: string; value: number; big?: boolea
   );
 }
 
+type PayState = null | { due?: { cashCents: number; cardCents: number }; done?: { totalCents: number; changeCents: number } };
+
 function TenderSheet(props: {
-  totalCents: number;
+  dual: DualTotals;
+  bps: number;
+  terminalState: ReturnType<typeof useTerminal>;
+  onState: (s: PayState) => void;
   customer: Customer | null;
   onCancel: () => void;
-  submit: (tenders: TenderInput[], idempotencyKey: string) => Promise<{ order: { number: number }; changeCents: number }>;
+  submit: (
+    tenders: TenderInput[],
+    idempotencyKey: string,
+  ) => Promise<{ order: { id: string; number: number; totalCents: number; cardAdjustmentCents: number }; changeCents: number }>;
   onDone: () => void;
 }) {
   // One key per sale attempt: network retries reuse it so the card is never
   // double-charged. A new key is only minted after a definite failure.
   const [idempotencyKey, setIdempotencyKey] = useState(() => Crypto.randomUUID());
-  const { terminals, terminal, select } = useTerminal();
+  const { terminals, terminal, select } = props.terminalState;
   const [pickingTerminal, setPickingTerminal] = useState(false);
   const [waitingOnCard, setWaitingOnCard] = useState(false);
   const [tenders, setTenders] = useState<TenderInput[]>([]);
   const [cashInput, setCashInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [receipt, setReceipt] = useState<{ number: number; changeCents: number } | null>(null);
+  const [receipt, setReceipt] = useState<{ id: string; number: number; changeCents: number } | null>(null);
+  const [printMsg, setPrintMsg] = useState<string | null>(null);
 
-  const paid = tenders.reduce((a, t) => a + t.amountCents, 0);
-  const due = props.totalCents - paid;
+  // Dual pricing: cash-priced tenders pay down the cash total; a card covers
+  // whatever is left at the card price.
+  const cashPricedPaid = tenders.filter((t) => !isCardPriced(t.type)).reduce((a, t) => a + t.amountCents, 0);
+  const cardPaid = tenders.filter((t) => isCardPriced(t.type)).reduce((a, t) => a + t.amountCents, 0);
+  const hasCard = tenders.some((t) => isCardPriced(t.type));
+  const cashDue = hasCard ? 0 : Math.max(0, props.dual.cash.totalCents - cashPricedPaid);
+  const cardDue = cardAmountDue(props.dual, cashPricedPaid);
+  const due = cashDue;
+  const ready = hasCard ? cardPaid === cardDue : cashDue === 0;
+
+  useEffect(() => {
+    if (!receipt) props.onState({ due: { cashCents: cashDue, cardCents: hasCard ? 0 : cardDue } });
+  }, [cashDue, cardDue, hasCard, receipt]);
   const credit = props.customer?.storeCreditCents ?? 0;
   const creditUsed = tenders.filter((t) => t.type === "STORE_CREDIT").reduce((a, t) => a + t.amountCents, 0);
   const rewards = props.customer?.loyalty?.rewardsCents ?? 0;
@@ -241,9 +314,9 @@ function TenderSheet(props: {
   };
   const addCard = () => {
     if (due <= 0) return;
-    if (terminal) return setTenders((t) => [...t, { type: "CARD", amountCents: due, terminalId: terminal.id }]);
+    if (terminal) return setTenders((t) => [...t, { type: "CARD", amountCents: cardDue, terminalId: terminal.id }]);
     // Development without a terminal: the API's mock processor approves this token.
-    if (__DEV__ && terminals?.length === 0) return setTenders((t) => [...t, { type: "CARD", amountCents: due, paymentToken: "tok_ok" }]);
+    if (__DEV__ && terminals?.length === 0) return setTenders((t) => [...t, { type: "CARD", amountCents: cardDue, paymentToken: "tok_ok" }]);
     setPickingTerminal(true);
   };
   const addCredit = () => {
@@ -267,7 +340,8 @@ function TenderSheet(props: {
       for (let attempt = 0; ; attempt++) {
         try {
           const r = await props.submit(tenders, idempotencyKey);
-          setReceipt({ number: r.order.number, changeCents: r.changeCents });
+          setReceipt({ id: r.order.id, number: r.order.number, changeCents: r.changeCents });
+          props.onState({ done: { totalCents: r.order.totalCents + r.order.cardAdjustmentCents, changeCents: r.changeCents } });
           return;
         } catch (e) {
           if (e instanceof ApiError && e.code === "SALE_IN_PROGRESS" && attempt < 80) {
@@ -296,11 +370,43 @@ function TenderSheet(props: {
             <>
               <Text style={ui.h1}>Sale #{receipt.number} complete</Text>
               {receipt.changeCents > 0 && <Text style={[ui.h1, { color: colors.good, fontSize: 40 }]}>Change {formatCents(receipt.changeCents)}</Text>}
+              <View style={[ui.row, { gap: 8 }]}>
+                <Button
+                  title="Print receipt"
+                  kind="secondary"
+                  style={{ flex: 1 }}
+                  onPress={async () => {
+                    try {
+                      await Print.printAsync({ html: await apiText("GET", `/orders/${receipt.id}/receipt?format=html`) });
+                    } catch (e) {
+                      setPrintMsg(e instanceof Error ? e.message : String(e));
+                    }
+                  }}
+                />
+                {terminal && (
+                  <Button
+                    title="Print on terminal"
+                    kind="secondary"
+                    style={{ flex: 1 }}
+                    onPress={async () => {
+                      try {
+                        await api("POST", `/orders/${receipt.id}/receipt/print`, { terminalId: terminal.id });
+                        setPrintMsg("Printing on the terminal");
+                      } catch (e) {
+                        setPrintMsg(e instanceof ApiError ? e.message : String(e));
+                      }
+                    }}
+                  />
+                )}
+              </View>
+              {printMsg && <Text style={ui.muted}>{printMsg}</Text>}
               <Button title="New sale" kind="good" onPress={props.onDone} />
             </>
           ) : (
             <>
-              <Text style={ui.h1}>{due > 0 ? `Due ${formatCents(due)}` : "Ready to complete"}</Text>
+              <Text style={ui.h1}>
+                {ready ? "Ready to complete" : props.bps > 0 ? `Due ${formatCents(cashDue)} cash · ${formatCents(cardDue)} card` : `Due ${formatCents(cashDue)}`}
+              </Text>
               {tenders.map((t, i) => (
                 <View key={i} style={[ui.row, { justifyContent: "space-between" }]}>
                   <Text style={ui.text}>
@@ -331,7 +437,7 @@ function TenderSheet(props: {
                     />
                   </View>
                   <View style={[ui.row, { gap: 8 }]}>
-                    <Button title={`Card ${formatCents(due)}`} onPress={addCard} style={{ flex: 1 }} />
+                    <Button title={`Card ${formatCents(cardDue)}`} onPress={addCard} style={{ flex: 1 }} />
                     {credit - creditUsed > 0 && (
                       <Button title={`Store credit (${formatCents(credit - creditUsed)})`} kind="secondary" onPress={addCredit} style={{ flex: 1 }} />
                     )}
@@ -350,7 +456,7 @@ function TenderSheet(props: {
               </Pressable>
               <View style={[ui.row, { gap: 8 }]}>
                 <Button title="Back" kind="secondary" onPress={props.onCancel} disabled={busy} />
-                <Button title="Complete sale" kind="good" onPress={complete} disabled={due !== 0} busy={busy} style={{ flex: 1 }} />
+                <Button title="Complete sale" kind="good" onPress={complete} disabled={!ready} busy={busy} style={{ flex: 1 }} />
               </View>
             </>
           )}

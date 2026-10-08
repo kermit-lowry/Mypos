@@ -37,7 +37,7 @@ export function adminRoutes(app: FastifyInstance, base: Ctx) {
     const { locationId, date } = parse(z.object({ locationId: z.string(), date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }), req.query);
     const start = new Date(`${date}T00:00:00`);
     const end = new Date(start.getTime() + 24 * 3600 * 1000);
-    const [payments, lines, buylists] = await Promise.all([
+    const [payments, lines, buylists, adjustments] = await Promise.all([
       prisma.payment.groupBy({
         by: ["tender"],
         where: { status: "APPROVED", createdAt: { gte: start, lt: end }, OR: [{ order: { locationId } }, { preorder: { locationId } }] },
@@ -53,6 +53,10 @@ export function adminRoutes(app: FastifyInstance, base: Ctx) {
         _sum: { paidCents: true },
         _count: true,
       }),
+      prisma.order.aggregate({
+        where: { locationId, status: { not: "VOID" }, createdAt: { gte: start, lt: end } },
+        _sum: { cardAdjustmentCents: true, cardAdjustmentTaxCents: true, taxCents: true },
+      }),
     ]);
     const byKind: Record<string, { units: number; netCents: number; costCents: number }> = {};
     for (const l of lines) {
@@ -66,6 +70,11 @@ export function adminRoutes(app: FastifyInstance, base: Ctx) {
       date,
       tenders: payments.map((p) => ({ tender: p.tender, netCents: p._sum.amountCents ?? 0 })),
       byKind,
+      tax: {
+        collectedCents: (adjustments._sum.taxCents ?? 0) + (adjustments._sum.cardAdjustmentTaxCents ?? 0),
+      },
+      /** Extra collected from card-priced payments (dual pricing), including its tax. */
+      cardPriceAdjustmentCents: adjustments._sum.cardAdjustmentCents ?? 0,
       buylist: buylists.map((b) => ({ payout: b.payout, tickets: b._count, paidCents: b._sum.paidCents ?? 0 })),
     };
   });

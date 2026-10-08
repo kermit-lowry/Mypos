@@ -107,7 +107,8 @@ export class HandpointGateway implements PaymentGateway {
       cardLast4: r.maskedCardNumber ? r.maskedCardNumber.slice(-4) : undefined,
       raw: r,
     };
-    if (status === "AUTHORISED") return { approved: true, ...base, message: r.statusMessage };
+    // PROCESSED is the success status for printReceipt.
+    if (status === "AUTHORISED" || status === "PROCESSED") return { approved: true, ...base, message: r.statusMessage };
     if (status === "IN_PROGRESS" || status === "UNDEFINED") return { approved: false, pending: true, ...base, message: "Waiting on the terminal" };
     const reason = { DECLINED: "Card declined", CANCELLED: "Cancelled on the terminal", FAILED: "Card couldn't be read or the terminal failed" }[status];
     return { approved: false, ...base, message: r.errorMessage || reason || r.statusMessage || status };
@@ -201,6 +202,13 @@ export class HandpointGateway implements PaymentGateway {
       { operation: "saleReversal", amount: String(opts.amountCents), originalTransactionId: gatewayRef },
       opts.terminal,
     );
+  }
+
+  /** Print on the PAX terminal's printer (Handpoint HTML Print Format). */
+  async printReceipt(html: string, terminal: TerminalRef): Promise<GatewayResult> {
+    const sent = await this.send({ operation: "printReceipt", receipt: html, terminal_type: terminal.model, serial_number: terminal.ref });
+    if ("result" in sent) return sent.result;
+    return (await this.awaitResult(sent.resultId, this.now() + 30_000)) ?? { approved: false, message: "The terminal didn't confirm printing" };
   }
 
   async lookup(gatewayRef: string): Promise<GatewayResult> {

@@ -110,11 +110,15 @@ export interface Reward {
   pointsCost: number;
 }
 
-export interface LoyaltyQuote {
+export interface Totals {
   subtotalCents: number;
   discountCents: number;
   taxCents: number;
   totalCents: number;
+}
+
+export interface LoyaltyQuote extends Totals {
+  card: Totals;
   rewardDiscounts: number[];
   pointsCost: number;
   earn: { unit: "POINTS" | "CENTS"; amount: number } | null;
@@ -124,4 +128,30 @@ export interface Location {
   id: string;
   name: string;
   taxRateBps: number;
+  /** Dual pricing: card price = cash price + this many bps. 0 = off. */
+  cardPriceBps: number;
+  labelPrinterHost: string | null;
+  receiptHeader: string | null;
+  receiptFooter: string | null;
+}
+
+/** Fetch a text/HTML response (receipts, labels). */
+export async function apiText(method: "GET" | "POST", path: string, body?: unknown): Promise<string> {
+  const res = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    const json = (() => {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return undefined;
+      }
+    })();
+    throw new ApiError(res.status, json?.error ?? "ERROR", json?.message ?? res.statusText);
+  }
+  return text;
 }

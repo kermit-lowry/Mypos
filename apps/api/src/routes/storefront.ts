@@ -1,4 +1,4 @@
-import { CartLine } from "@mypos/shared";
+import { CartLine, cardPrice } from "@mypos/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { availableFor } from "../channels/sync.js";
@@ -14,11 +14,15 @@ import type { Ctx } from "../services/context.js";
 export function storefrontRoutes(app: FastifyInstance, base: Ctx, opts: { fulfillmentLocationId: () => Promise<string> }) {
   const { prisma } = base;
 
+  /** Online orders pay by card, so the store shows card prices (cash price alongside, for disclosure). */
+  const cardBps = async () => (await prisma.location.findUniqueOrThrow({ where: { id: await opts.fulfillmentLocationId() } })).cardPriceBps;
+
   app.get("/storefront/products", async (req) => {
     const { q, kind, game, cursor } = parse(
       z.object({ q: z.string().optional(), kind: z.string().optional(), game: z.string().optional(), cursor: z.string().optional() }),
       req.query,
     );
+    const bps = await cardBps();
     const products = await prisma.product.findMany({
       where: {
         channels: { has: "STOREFRONT" },
@@ -42,7 +46,8 @@ export function storefrontRoutes(app: FastifyInstance, base: Ctx, opts: { fulfil
         setName: p.setName,
         variants: p.variants.map((v) => ({
           id: v.id,
-          priceCents: v.priceCents,
+          priceCents: cardPrice(v.priceCents, bps),
+          cashPriceCents: v.priceCents,
           condition: v.condition,
           finish: v.finish,
           size: v.size,
@@ -57,12 +62,19 @@ export function storefrontRoutes(app: FastifyInstance, base: Ctx, opts: { fulfil
 
   app.get("/storefront/products/:id", async (req) => {
     const { id } = req.params as { id: string };
+    const bps = await cardBps();
     const p = await prisma.product.findFirst({ where: { id, channels: { has: "STOREFRONT" } }, include: { variants: true } });
     if (!p) throw notFound("Product");
     return {
       ...p,
       variants: await Promise.all(
-        p.variants.map(async (v) => ({ ...v, costCents: undefined, available: await availableFor(prisma, v.id) })),
+        p.variants.map(async (v) => ({
+          ...v,
+          costCents: undefined,
+          priceCents: cardPrice(v.priceCents, bps),
+          cashPriceCents: v.priceCents,
+          available: await availableFor(prisma, v.id),
+        })),
       ),
     };
   });
@@ -101,7 +113,7 @@ export function storefrontRoutes(app: FastifyInstance, base: Ctx, opts: { fulfil
     return reply.code(result.replayed ? 200 : 201).send({
       orderNumber: o.number,
       status: o.status,
-      totalCents: o.totalCents,
+      totalCents: o.totalCents + o.cardAdjustmentCents,
       lines: o.lines.map((l) => ({ title: l.title, quantity: l.quantity, unitPriceCents: l.unitPriceCents })),
     });
   });

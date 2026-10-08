@@ -16,6 +16,13 @@ model Location {
   /// Sales tax rate in basis points (8.25% = 825).
   taxRateBps Int      @default(0)
   timezone   String   @default("America/New_York")
+  /// Dual pricing: card price = cash price + this many bps (399 = 3.99%). 0 = off.
+  cardPriceBps Int    @default(0)
+  /// Zebra (ZPL) label printer on the store network, "host" or "host:port".
+  labelPrinterHost String?
+  /// Shown on receipts.
+  receiptHeader String?
+  receiptFooter String?
   createdAt  DateTime @default(now())
 
   inventory   InventoryLevel[]
@@ -306,6 +313,13 @@ model Order {
   taxCents       Int
   totalCents     Int
   note           String?
+  /// Dual pricing: what card payments added over the cash total (totalCents is
+  /// the cash-price total), and the sales tax included in that amount.
+  cardAdjustmentCents    Int @default(0)
+  cardAdjustmentTaxCents Int @default(0)
+  /// Card markup in effect when the sale was made, and what paying fully by card cost.
+  cardPriceBps           Int @default(0)
+  cardTotalCents         Int @default(0)
   /// Loyalty earned on this sale, in the program's unit at the time.
   loyaltyEarned   Int          @default(0)
   loyaltyUnit     LoyaltyUnit?
@@ -656,4 +670,11 @@ model LoyaltyEntry {
   createdAt  DateTime    @default(now())
 
   @@index([customerId, unit])
+}
+
+/// Latest cart shown on a customer-facing display, keyed by the register's channel.
+model CustomerDisplay {
+  channel   String   @id
+  payload   Json
+  updatedAt DateTime @updatedAt
 }

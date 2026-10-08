@@ -1,5 +1,5 @@
 import type { Payment } from "@prisma/client";
-import { roundHalfUp, type RefundInput } from "@mypos/shared";
+import { cardPrice, roundHalfUp, type RefundInput } from "@mypos/shared";
 import { badRequest, conflict, notFound } from "../errors.js";
 import type { Ctx } from "./context.js";
 import { followUpTerminal } from "./charges.js";
@@ -39,15 +39,26 @@ export async function refundOrder(ctx: Ctx, input: RefundInput): Promise<RefundR
     }
     if (input.toStoreCredit && !order.customerId) throw badRequest("CUSTOMER_REQUIRED", "Store credit refunds need a customer");
 
-    const taxableBase = order.lines.filter((l) => l.taxable).reduce((a, l) => a + l.unitPriceCents * l.quantity - l.discountCents, 0);
+    // Dual pricing: a sale paid entirely by card is refunded at card prices, so
+    // each item comes back at exactly its receipt price. A split sale is
+    // refunded at cash prices scaled up by what was actually paid.
+    const paid = order.totalCents + order.cardAdjustmentCents;
+    const allCard = order.cardAdjustmentCents > 0 && paid === order.cardTotalCents;
+    const unit = (l: { unitPriceCents: number }) => (allCard ? cardPrice(l.unitPriceCents, order.cardPriceBps) : l.unitPriceCents);
+    const disc = (l: { discountCents: number }) => (allCard && l.discountCents ? cardPrice(l.discountCents, order.cardPriceBps) : l.discountCents);
+    const orderTax = allCard ? order.taxCents + order.cardAdjustmentTaxCents : order.taxCents;
+    const scale = (basis: number) => (allCard || order.totalCents === 0 ? basis : roundHalfUp((basis * paid) / order.totalCents));
+
+    const taxableBase = order.lines.filter((l) => l.taxable).reduce((a, l) => a + unit(l) * l.quantity - disc(l), 0);
 
     // Amounts are computed cumulatively (refunded-so-far after minus before),
     // so a run of partial refunds always sums to exactly what was paid.
     const netAt = (l: { unitPriceCents: number; quantity: number; discountCents: number }, qty: number) =>
-      roundHalfUp(((l.unitPriceCents * l.quantity - l.discountCents) * qty) / l.quantity);
-    const taxAt = (taxableNet: number) => (taxableBase > 0 ? roundHalfUp((order.taxCents * taxableNet) / taxableBase) : 0);
+      roundHalfUp(((unit(l) * l.quantity - disc(l)) * qty) / l.quantity);
+    const taxAt = (taxableNet: number) => (taxableBase > 0 ? roundHalfUp((orderTax * taxableNet) / taxableBase) : 0);
     let taxableRefunded = order.lines.filter((l) => l.taxable).reduce((a, l) => a + netAt(l, l.refundedQty), 0);
     const taxBefore = taxAt(taxableRefunded);
+    const netBefore = order.lines.reduce((a, l) => a + netAt(l, l.refundedQty), 0);
 
     if (new Set(input.lines.map((l) => l.orderLineId)).size !== input.lines.length) {
       throw badRequest("DUPLICATE_LINE", "List each order line once");
@@ -108,7 +119,9 @@ export async function refundOrder(ctx: Ctx, input: RefundInput): Promise<RefundR
       }
     }
 
-    total += taxAt(taxableRefunded) - taxBefore;
+    const cashBasisBefore = netBefore + taxBefore;
+    const cashBasisAfter = netBefore + total + taxAt(taxableRefunded);
+    total = scale(cashBasisAfter) - scale(cashBasisBefore);
 
     // Allocate the refund across tenders.
     const legs: RefundLeg[] = [];

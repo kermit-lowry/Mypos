@@ -52,6 +52,8 @@ export interface PaymentGateway {
   sale(req: SaleRequest): Promise<GatewayResult>;
   refund(gatewayRef: string, amountCents: number, opts?: FollowUpOptions): Promise<GatewayResult>;
   void(gatewayRef: string, opts?: FollowUpOptions): Promise<GatewayResult>;
+  /** Print an HTML receipt on a terminal's built-in printer, where supported. */
+  printReceipt?(html: string, terminal: TerminalRef): Promise<GatewayResult>;
   /** Re-check a pending payment's outcome, where the processor supports it. */
   lookup?(gatewayRef: string, opts?: FollowUpOptions): Promise<GatewayResult>;
 }
