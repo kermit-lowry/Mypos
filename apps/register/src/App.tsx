@@ -13,6 +13,7 @@ import { EventsScreen } from "./screens/EventsScreen";
 import { LabelsScreen } from "./screens/LabelsScreen";
 import { LoginScreen } from "./screens/LoginScreen";
 import { LoyaltySettingsScreen } from "./screens/LoyaltySettingsScreen";
+import { OnlineOrdersScreen } from "./screens/OnlineOrdersScreen";
 import { SellScreen } from "./screens/SellScreen";
 import { LayawayScreen } from "./screens/LayawayScreen";
 import { clockLabel, ShiftScreen, useClockStatus } from "./screens/ShiftScreen";
@@ -21,16 +22,18 @@ import { useLayout } from "./layout";
 import type { EffectivePermissions, Permission } from "@mypos/shared";
 import { ApprovalProvider, NotPermitted } from "./approval";
 import { CartProvider, useCart, useClearCart } from "./cart";
+import { FulfillmentBadge, FulfillmentProvider, useFulfillmentQueue } from "./fulfillment";
 import { ActivityScreen } from "./screens/ActivityScreen";
 import { StaffScreen } from "./screens/StaffScreen";
 import { SessionContext, useCan, useSession, type Session, type Staff } from "./session";
 import * as storage from "./storage";
 import { colors, ui } from "./theme";
 
-const TABS = ["Sell", "Shift", "Layaways", "Buylist", "Events", "Labels", "Deals", "Activity", "Staff", "Store", "Loyalty", "Display"] as const;
+const TABS = ["Sell", "Online", "Shift", "Layaways", "Buylist", "Events", "Labels", "Deals", "Activity", "Staff", "Store", "Loyalty", "Display"] as const;
 type Tab = (typeof TABS)[number];
 /** Gated tabs, shown to employees who have any of the permissions (ALLOW or PIN). */
 const TAB_PERMISSION: Partial<Record<Tab, Permission[]>> = {
+  Online: ["FULFILL_ORDERS"],
   Shift: ["DRAWER_OPEN_CLOSE", "CASH_IN_OUT"],
   Layaways: ["LAYAWAY_CREATE", "LAYAWAY_CANCEL"],
   Deals: ["MANAGE_DEALS"],
@@ -45,6 +48,8 @@ function RegisterApp() {
   const [session, setSession] = useState<Omit<Session, "signOut"> | null>(null);
   const [tab, setTab] = useState<Tab>("Sell");
   const [signOutNotice, setSignOutNotice] = useState<string | null>(null);
+  /** An online order to open on the Online tab (from a toast). */
+  const [focusOrder, setFocusOrder] = useState<{ id: string; at: number } | null>(null);
   const { narrow } = useLayout();
   // Registers and customer displays shouldn't dim or lock mid-sale.
   useKeepAwake();
@@ -103,50 +108,73 @@ function RegisterApp() {
       <StatusBar style="light" hidden={tab === "Display"} />
       <SessionContext.Provider value={value}>
         <ApprovalProvider>
-          {/* The cart lives above the tabs, so changing tabs doesn't lose a sale. */}
-          <CartProvider>
-            {tab === "Display" ? (
-              <CustomerDisplayScreen onExit={() => setTab("Sell")} />
-            ) : (
-              <SafeAreaView style={ui.screen}>
-                <View style={[ui.row, { paddingHorizontal: narrow ? 8 : 16, paddingTop: 8, gap: 8 }]}>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ gap: 8 }}>
-                    {visible.map((t) => (
-                      <Pressable
-                        key={t}
-                        onPress={() => setTab(t)}
-                        style={{ paddingVertical: 10, paddingHorizontal: 18, borderRadius: 8, backgroundColor: tab === t ? colors.accent : colors.panel }}
-                      >
-                        <Text style={[ui.text, { fontWeight: "600" }]}>{t}</Text>
-                      </Pressable>
-                    ))}
-                  </ScrollView>
-                  {!narrow && (
-                    <Text style={ui.muted}>
-                      {session.staff.name} · {session.location.name}
-                    </Text>
-                  )}
-                  <ClockBadge />
-                  <SignOutButton onNotice={setSignOutNotice} />
-                </View>
-                {signOutNotice && <Text style={[ui.error, { paddingHorizontal: narrow ? 8 : 16, paddingTop: 4 }]}>{signOutNotice}</Text>}
-                {tab === "Sell" && <SellScreen />}
-                {tab === "Shift" && <ShiftScreen />}
-                {tab === "Layaways" && <LayawayScreen />}
-                {tab === "Buylist" && <BuylistScreen />}
-                {tab === "Events" && <EventsScreen />}
-                {tab === "Labels" && <LabelsScreen />}
-                {tab === "Deals" && <DealsScreen />}
-                {tab === "Activity" && <ActivityScreen />}
-                {tab === "Staff" && <StaffScreen />}
-                {tab === "Loyalty" && <LoyaltySettingsScreen />}
-                {tab === "Store" && <StoreSettingsScreen onSaved={(location) => setSession({ ...session, location })} />}
-              </SafeAreaView>
-            )}
-          </CartProvider>
+          {/* Online orders are watched from every tab: the chime, toast and header badge come from here. */}
+          <FulfillmentProvider
+            silent={tab === "Display"}
+            onOpen={(id) => {
+              if (id) setFocusOrder({ id, at: Date.now() });
+              setTab("Online");
+            }}
+          >
+            {/* The cart lives above the tabs, so changing tabs doesn't lose a sale. */}
+            <CartProvider>
+              {tab === "Display" ? (
+                <CustomerDisplayScreen onExit={() => setTab("Sell")} />
+              ) : (
+                <SafeAreaView style={ui.screen}>
+                  <View style={[ui.row, { paddingHorizontal: narrow ? 8 : 16, paddingTop: 8, gap: 8 }]}>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ gap: 8 }}>
+                      {visible.map((t) => (
+                        <Pressable
+                          key={t}
+                          onPress={() => setTab(t)}
+                          style={{ paddingVertical: 10, paddingHorizontal: 18, borderRadius: 8, backgroundColor: tab === t ? colors.accent : colors.panel }}
+                        >
+                          <TabTitle tab={t} />
+                        </Pressable>
+                      ))}
+                    </ScrollView>
+                    {!narrow && (
+                      <Text style={ui.muted}>
+                        {session.staff.name} · {session.location.name}
+                      </Text>
+                    )}
+                    <FulfillmentBadge />
+                    <ClockBadge />
+                    <SignOutButton onNotice={setSignOutNotice} />
+                  </View>
+                  {signOutNotice && <Text style={[ui.error, { paddingHorizontal: narrow ? 8 : 16, paddingTop: 4 }]}>{signOutNotice}</Text>}
+                  {tab === "Sell" && <SellScreen />}
+                  {tab === "Online" && <OnlineOrdersScreen focus={focusOrder} />}
+                  {tab === "Shift" && <ShiftScreen />}
+                  {tab === "Layaways" && <LayawayScreen />}
+                  {tab === "Buylist" && <BuylistScreen />}
+                  {tab === "Events" && <EventsScreen />}
+                  {tab === "Labels" && <LabelsScreen />}
+                  {tab === "Deals" && <DealsScreen />}
+                  {tab === "Activity" && <ActivityScreen />}
+                  {tab === "Staff" && <StaffScreen />}
+                  {tab === "Loyalty" && <LoyaltySettingsScreen />}
+                  {tab === "Store" && <StoreSettingsScreen onSaved={(location) => setSession({ ...session, location })} />}
+                </SafeAreaView>
+              )}
+            </CartProvider>
+          </FulfillmentProvider>
         </ApprovalProvider>
       </SessionContext.Provider>
     </SafeAreaProvider>
+  );
+}
+
+/** The tab's name; "Online" carries how many online orders are open. */
+function TabTitle({ tab }: { tab: Tab }) {
+  const { counts } = useFulfillmentQueue();
+  const n = tab === "Online" ? counts.total : 0;
+  return (
+    <Text style={[ui.text, { fontWeight: "600" }]}>
+      {tab}
+      {n > 0 ? ` · ${n}` : ""}
+    </Text>
   );
 }
 

@@ -399,3 +399,107 @@ export interface Layaway {
   lineCount?: number;
   _count?: { lines: number };
 }
+
+// ─── Online orders (fulfillment) ─────────────────────────────────
+
+/** NEW → ACKNOWLEDGED → PICKING → READY → PICKED_UP | SHIPPED. PROBLEM parks an order that can't be filled. */
+export type FulfillmentStatus = "NEW" | "ACKNOWLEDGED" | "PICKING" | "READY" | "SHIPPED" | "PICKED_UP" | "PROBLEM";
+export type FulfillmentMethod = "PICKUP" | "SHIP";
+export type OnlineChannel = "STOREFRONT" | "SHOPIFY" | "EBAY" | "TCGPLAYER";
+
+export interface ShippingAddress {
+  name?: string | null;
+  line1?: string | null;
+  line2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
+  country?: string | null;
+  phone?: string | null;
+}
+
+/** One item to set aside. */
+export interface OnlineOrderLine {
+  id: string;
+  variantId: string;
+  title: string;
+  quantity: number;
+  sku?: string | null;
+  imageUrl?: string | null;
+  unitPriceCents?: number;
+  discountCents?: number;
+  /** Units already refunded; a fully refunded line needn't be set aside. */
+  refundedQty?: number;
+  picked?: boolean;
+}
+
+export interface OnlineOrderTotals {
+  subtotalCents: number;
+  discountCents: number;
+  taxCents: number;
+  /** Charged on top of the items, not taxed; included in totalCents. */
+  shippingCents: number;
+  totalCents: number;
+  cardAdjustmentCents: number;
+  /** What the card was charged: total plus the card price adjustment. */
+  chargedCents?: number;
+}
+
+/** A paid order from the web store or a marketplace, waiting to be set aside and handed over or shipped. */
+export interface OnlineOrder extends Partial<OnlineOrderTotals> {
+  id: string;
+  number: number;
+  channel: OnlineChannel | string;
+  externalId?: string | null;
+  /** Payment status of the sale (PAID, PARTIALLY_REFUNDED, REFUNDED, VOID). */
+  status: string;
+  fulfillment: FulfillmentMethod;
+  fulfillmentStatus: FulfillmentStatus;
+  customer: { id: string; name: string; email?: string | null; phone?: string | null } | null;
+  customerPhone?: string | null;
+  /** The customer's note at checkout (pickup time, gift, etc.). */
+  customerNote?: string | null;
+  /** Staff/import note on the sale. */
+  note?: string | null;
+  /** The note left when it was flagged, while it is in PROBLEM. */
+  problemNote?: string | null;
+  shippingAddress?: ShippingAddress | null;
+  /** Money, when the server nests it (else the flat *Cents fields). */
+  totals?: OnlineOrderTotals;
+  carrier?: string | null;
+  trackingNumber?: string | null;
+  /** Lines ticked off as set aside. */
+  pickedLineIds: string[];
+  items?: number;
+  createdAt: string;
+  acknowledgedAt?: string | null;
+  readyAt?: string | null;
+  shippedAt?: string | null;
+  pickedUpAt?: string | null;
+  fulfilledBy?: { id?: string; name: string } | null;
+  ageMinutes?: number;
+  lines: OnlineOrderLine[];
+  /** GET /fulfillment/orders/:id only: placed, each queue step (who, when, note), refunds. */
+  timeline?: { at: string; event: string; by?: string | null; note?: string | null }[];
+}
+
+/** What the register polls: open-order counts and the newest orders, for the badge and toasts. */
+export interface FulfillmentQueue {
+  counts: { NEW: number; ACKNOWLEDGED: number; PICKING: number; READY: number; PROBLEM: number; total: number };
+  /** Orders created after `since`. */
+  newSince: number;
+  latest: FulfillmentQueueOrder[];
+}
+
+export interface FulfillmentQueueOrder {
+  id: string;
+  number: number;
+  channel: OnlineChannel | string;
+  fulfillment: FulfillmentMethod;
+  fulfillmentStatus: FulfillmentStatus;
+  customer: { name: string | null } | null;
+  items: number;
+  /** What the customer paid, shipping and card adjustment included. */
+  totalCents: number;
+  createdAt: string;
+}
