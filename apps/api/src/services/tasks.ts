@@ -69,12 +69,21 @@ function tzOffsetMs(instant: Date, timeZone: string): number {
   return asUtc - Math.floor(instant.getTime() / 1000) * 1000;
 }
 
-/** The instant of a wall-clock time in `timeZone` (two-pass offset search; a DST gap resolves to the later offset). */
+/**
+ * The instant of a wall-clock time in `timeZone` (two-pass offset search). A wall
+ * time inside a spring-forward gap rolls forward past it (02:30 → 03:30), i.e. it
+ * is read with the pre-transition offset; an ambiguous fall-back time takes its first
+ * (pre-transition) reading.
+ */
 export function zonedToUtc(day: DayISO, hour: number, minute: number, second = 0, ms = 0, timeZone: string): Date {
   const [y, m, d] = partsOf(day);
   const wall = Date.UTC(y, m - 1, d, hour, minute, second, ms);
   const guess = wall - tzOffsetMs(new Date(wall), timeZone);
-  return new Date(wall - tzOffsetMs(new Date(guess), timeZone));
+  const o1 = tzOffsetMs(new Date(guess), timeZone);
+  const r = new Date(wall - o1);
+  const o2 = tzOffsetMs(r, timeZone);
+  // The two passes only disagree inside a gap, where {o1, o2} are the offsets either side of it.
+  return o2 === o1 ? r : new Date(wall - Math.min(o1, o2));
 }
 
 /** When a task on `day` is due: `dueTime` in the store's zone, else the last millisecond of that local day. */
@@ -211,9 +220,15 @@ export async function materialize(db: Db, input: { locationId: string; from?: Da
     where: { active: true, OR: [{ locationId: loc.id }, { locationId: null }], startsOn: { lte: dayToDate(to) }, AND: [{ OR: [{ endsOn: null }, { endsOn: { gte: dayToDate(from) } }] }] },
   });
   const data: Prisma.TaskOccurrenceCreateManyInput[] = [];
+  // A task's days start when its schedule was (re)defined, in this store's zone: a task
+  // created or rescheduled today never gets backdated days nobody was asked to do.
+  const floors = new Map(tasks.map((t) => [t.id, localDate(t.scheduleChangedAt, loc.timezone)]));
   const days = Math.min(daysBetween(from, to), MAX_MATERIALIZE_DAYS);
   for (let i = 0, day = from; i <= days; i++, day = addDays(day, 1)) {
-    for (const t of tasks) if (occursOn(t, day)) data.push({ taskId: t.id, locationId: loc.id, dueOn: dayToDate(day), dueAt: dueAtFor(day, t.dueTime, loc.timezone) });
+    for (const t of tasks) {
+      if (day < floors.get(t.id)! || !occursOn(t, day)) continue;
+      data.push({ taskId: t.id, locationId: loc.id, dueOn: dayToDate(day), dueAt: dueAtFor(day, t.dueTime, loc.timezone) });
+    }
   }
   const r = data.length ? await db.taskOccurrence.createMany({ data, skipDuplicates: true }) : { count: 0 };
   return { created: r.count, from, to };
@@ -256,9 +271,9 @@ export async function board(db: Db, input: { locationId: string; date: DayISO; n
   const now = input.now ?? new Date();
   const loc = await locationOf(db, input.locationId);
   const today = localDate(now, loc.timezone);
-  const from = addDays(today, -MATERIALIZE_BACK_DAYS);
-  const to = addDays(today, MATERIALIZE_AHEAD_DAYS);
-  await materialize(db, { locationId: loc.id, from: input.date < from ? input.date : from, to: input.date > to ? input.date : to, now });
+  // The usual window, plus just that one day when it lies outside it (never the days between).
+  const win = await materialize(db, { locationId: loc.id, now });
+  if (input.date < win.from || input.date > win.to) await materialize(db, { locationId: loc.id, from: input.date, to: input.date, now });
   const rows = await db.taskOccurrence.findMany({
     where: { locationId: loc.id, OR: [{ dueOn: dayToDate(input.date) }, { status: "OPEN", dueOn: { lt: dayToDate(today) } }] },
     include: occInclude,
@@ -317,8 +332,12 @@ export interface TaskInput {
   active?: boolean;
 }
 
-/** The rules every task (new or edited) must satisfy; returns the normalized data to store. */
-async function validateTask(db: Db, t: Required<TaskInput>) {
+/**
+ * The rules every task (new or edited) must satisfy; returns the normalized data to store.
+ * `before` is the stored task on an edit: an employee it was already assigned to may
+ * have since been deactivated, which must not block editing its other fields.
+ */
+async function validateTask(db: Db, t: Required<TaskInput>, before?: { assigneeType: TaskAssignee; assigneeId: string | null }) {
   const title = t.title.trim();
   if (title.length < 1 || title.length > 120) throw badRequest("TITLE", "A title is 1 to 120 characters");
   if (t.checklist.length > 30) throw badRequest("CHECKLIST_TOO_LONG", "A checklist has at most 30 steps");
@@ -347,7 +366,8 @@ async function validateTask(db: Db, t: Required<TaskInput>) {
   } else if (t.assigneeType === "EMPLOYEE") {
     if (!t.assigneeId) throw badRequest("ASSIGNEE", "Pick the employee this task is for");
     const who = await db.staff.findUnique({ where: { id: t.assigneeId } });
-    if (!who || !who.active) throw badRequest("ASSIGNEE", "That employee isn't active");
+    const unchanged = before?.assigneeType === "EMPLOYEE" && before.assigneeId === t.assigneeId;
+    if (!who || (!who.active && !unchanged)) throw badRequest("ASSIGNEE", "That employee isn't active");
     assigneeId = who.id;
   }
   const locationId = t.locationId || null;
@@ -455,14 +475,16 @@ export async function updateTask(db: Db, id: string, input: Partial<TaskInput>, 
     ...withDefaults({ ...before, checklist: checklistOf(before), startsOn: dateToDay(before.startsOn), endsOn: before.endsOn ? dateToDay(before.endsOn) : null }),
     ...(Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined)) as Partial<TaskInput>),
   } as Required<TaskInput>;
-  const data = await validateTask(db, merged);
+  const data = await validateTask(db, merged, before);
   const diff = changes(
     { ...before, checklist: checklistOf(before), startsOn: dateToDay(before.startsOn), endsOn: before.endsOn ? dateToDay(before.endsOn) : null },
     { ...data, startsOn: dateToDay(data.startsOn), endsOn: data.endsOn ? dateToDay(data.endsOn) : null },
   );
   if (Object.keys(diff).length === 0) return presentTask(before, await todayFor(db, before, now));
-  const task = await db.task.update({ where: { id }, data, include: taskInclude });
-  if (SCHEDULE_FIELDS.some((f) => f in diff)) {
+  // A schedule change restarts the task's days from now: what was due before stays as it was.
+  const rescheduled = SCHEDULE_FIELDS.some((f) => f in diff);
+  const task = await db.task.update({ where: { id }, data: rescheduled ? { ...data, scheduleChangedAt: now } : data, include: taskInclude });
+  if (rescheduled) {
     await dropFutureOpen(db, id, now);
     if (task.active) await materializeFor(db, task, now);
   }
@@ -532,11 +554,15 @@ export async function complete(
   return presentOccurrence(updated);
 }
 
-/** Skip with a reason (gated by TASK_SKIP at the route). */
-export async function skip(db: Db, input: { occurrenceId: string; staffId: string; reason: string; approverId?: string; now?: Date; ip?: string }) {
+/** Skip with a reason (gated by TASK_SKIP at the route); someone else's task needs MANAGE_TASKS, like completing it. */
+export async function skip(
+  db: Db,
+  input: { occurrenceId: string; staffId: string; role: StaffRole; manage: boolean; reason: string; approverId?: string; now?: Date; ip?: string },
+) {
   const now = input.now ?? new Date();
   const o = await getOccurrence(db, input.occurrenceId);
   mustBeOpen(o);
+  mustBeVisible(o, input);
   const reason = input.reason.trim();
   if (reason.length < 1 || reason.length > 300) throw badRequest("REASON", "Say why in 1 to 300 characters");
   const updated = await db.taskOccurrence.update({
@@ -590,12 +616,8 @@ export async function report(db: Db, input: { locationId?: string; from: DayISO;
   if (!isValidDay(input.from) || !isValidDay(input.to)) throw badRequest("RANGE", "from and to are YYYY-MM-DD dates");
   if (input.to < input.from) throw badRequest("RANGE", "End must be after start");
   if (daysBetween(input.from, input.to) > MAX_MATERIALIZE_DAYS) throw badRequest("RANGE", "Pick a range of up to a year");
-  // Fill the range in (back to its start) so days nobody opened the board on still count as due.
-  for (const loc of await materializeAll(db, { locationId: input.locationId, now })) {
-    const today = localDate(now, loc.timezone);
-    const back = addDays(today, -MATERIALIZE_BACK_DAYS);
-    if (input.from < back) await materialize(db, { locationId: loc.id, from: input.from, to: addDays(back, -1), now });
-  }
+  // Only the usual window: a report never backfills history nobody saw (it would all show as overdue).
+  await materializeAll(db, { locationId: input.locationId, now });
   const rows = await db.taskOccurrence.findMany({
     where: { locationId: input.locationId, dueOn: { gte: dayToDate(input.from), lte: dayToDate(input.to) } },
     include: occInclude,

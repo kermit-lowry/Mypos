@@ -105,12 +105,12 @@ export function taskRoutes(app: FastifyInstance, base: Ctx) {
     return { occurrence: await T.complete(prisma, { occurrenceId: id, ...who(req), note: body.note, checklistDone: body.checklistDone, ip: ip(req) }) };
   });
 
-  /** Skip with a reason; a cashier needs a manager's PIN (TASK_SKIP). */
+  /** Skip with a reason; a cashier needs a manager's PIN (TASK_SKIP). 403 TASK_NOT_YOURS unless it's theirs or they manage tasks. */
   app.post("/tasks/occurrences/:id/skip", staff, async (req) => {
     const { id } = parse(Id, req.params);
     const { reason } = parse(z.object({ reason: z.string().trim().min(1).max(300) }), req.body);
     await authorize(req, "TASK_SKIP", "skip task");
-    return { occurrence: await T.skip(prisma, { occurrenceId: id, staffId: req.user.sub, reason, approverId: req.approverId, ip: ip(req) }) };
+    return { occurrence: await T.skip(prisma, { occurrenceId: id, ...who(req), reason, approverId: req.approverId, ip: ip(req) }) };
   });
 
   app.post("/tasks/occurrences/:id/reopen", manage, async (req) => {

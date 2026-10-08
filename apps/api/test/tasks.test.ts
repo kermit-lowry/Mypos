@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { addDays, dayToDate, dueAtFor, materialize, nextDueOn, occursOn, weekdayOf } from "../src/services/tasks.js";
+import { addDays, dayToDate, dueAtFor, materialize, materializeAll, nextDueOn, occursOn, weekdayOf } from "../src/services/tasks.js";
 import { localDate } from "../src/services/timeclock.js";
 import { PINS, prisma, setup, type World } from "./helpers.js";
 
@@ -22,11 +22,20 @@ beforeEach(async () => {
 afterAll(() => prisma.$disconnect());
 
 const audits = async (action: string) => (await w.as(w.manager, "GET", `/audit?action=${action}`)).body as any[];
-/** A task at the test store (a manager makes it). */
-const mk = async (body: object, as = w.manager) => {
+/**
+ * A task at the test store (a manager makes it). One that starts in the past is
+ * aged so it has existed since then (its past days exist, as reads would have made
+ * them); a task merely created today never gets backdated days.
+ */
+const mk = async (body: { startsOn?: string; locationId?: string | null } & object, as = w.manager) => {
   const res = await w.as(as, "POST", "/tasks", { locationId: w.locationId, recurrence: "DAILY", startsOn: today, ...body });
   if (res.status !== 201) throw new Error(`POST /tasks ${res.status} ${JSON.stringify(res.body)}`);
-  return res.body.task as any;
+  const task = res.body.task as any;
+  if (body.startsOn && body.startsOn < today) {
+    await prisma.task.update({ where: { id: task.id }, data: { scheduleChangedAt: dayToDate(body.startsOn) } });
+    await materializeAll(prisma, { locationId: task.locationId ?? undefined });
+  }
+  return task;
 };
 const mine = async (token: string) => {
   const res = await w.as(token, "GET", `/tasks/mine?locationId=${w.locationId}`);
@@ -89,9 +98,30 @@ describe("schedule rules", () => {
     expect(dueAtFor("2026-07-01", "09:00", "America/Los_Angeles").toISOString()).toBe("2026-07-01T16:00:00.000Z");
     expect(dueAtFor("2026-01-15", null, "America/Los_Angeles").toISOString()).toBe("2026-01-16T07:59:59.999Z");
   });
+
+  it("a due time inside the spring-forward gap rolls forward, never back an hour", () => {
+    // 02:30 doesn't exist on 2026-03-08: it becomes 03:30 EDT (07:30Z), not 01:30 EST (06:30Z).
+    expect(dueAtFor("2026-03-08", "02:30", "America/New_York").toISOString()).toBe("2026-03-08T07:30:00.000Z");
+    expect(dueAtFor("2026-03-08", "02:30", "America/Los_Angeles").toISOString()).toBe("2026-03-08T10:30:00.000Z");
+    // Either side of the gap is untouched, and it sorts after a 02:00 task that day.
+    expect(dueAtFor("2026-03-08", "01:59", "America/New_York").toISOString()).toBe("2026-03-08T06:59:00.000Z");
+    expect(dueAtFor("2026-03-08", "03:00", "America/New_York").toISOString()).toBe("2026-03-08T07:00:00.000Z");
+    expect(dueAtFor("2026-03-08", "02:30", "America/New_York").getTime()).toBeGreaterThan(dueAtFor("2026-03-08", "02:00", "America/New_York").getTime());
+    // The ambiguous fall-back hour takes its first (EDT) reading.
+    expect(dueAtFor("2026-11-01", "01:30", "America/New_York").toISOString()).toBe("2026-11-01T05:30:00.000Z");
+  });
 });
 
 describe("materializing occurrences", () => {
+  it("a task defined today starts today, even when its start date is in the past", async () => {
+    const res = await w.as(w.manager, "POST", "/tasks", { locationId: w.locationId, recurrence: "DAILY", startsOn: day(-10), title: "Opening checklist" });
+    expect(res.status).toBe(201);
+    await mine(w.cashier);
+    const days = (await occurrences(res.body.task.id)).map((o) => o.dueOn.toISOString().slice(0, 10));
+    expect(days).toEqual(Array.from({ length: 8 }, (_, i) => day(i)));
+    expect((await mine(w.cashier)).counts.overdue).toBe(0);
+  });
+
   it("is idempotent and covers today − 14 to today + 7, bounded by endsOn", async () => {
     const t = await mk({ title: "Sweep", startsOn: day(-3) });
     expect(await occurrences(t.id)).toHaveLength(3 + 1 + 7);
@@ -262,6 +292,24 @@ describe("skipping and reopening", () => {
     expect((await mine(w.cashier)).counts.doneToday).toBe(2);
   });
 
+  it("skipping someone else's task takes MANAGE_TASKS, even with a TASK_SKIP approval", async () => {
+    const t = await mk({ title: "Count the safe", assigneeType: "ROLE", assigneeRole: "MANAGER" });
+    const o = await occ(t.id, today);
+    const grant = await w.as(w.cashier, "POST", "/auth/approve", { pin: PINS.MANAGER, permissions: ["TASK_SKIP"] });
+    const denied = await withApproval(grant.body.token, `/tasks/occurrences/${o.id}/skip`, { reason: "busy" });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json()).toMatchObject({ error: "TASK_NOT_YOURS" });
+    expect((await occ(t.id, today)).status).toBe("OPEN");
+    expect(await audits("TASK_SKIPPED")).toHaveLength(0);
+    // The same holds when the cashier's own TASK_SKIP is ALLOW.
+    await w.as(w.owner, "PATCH", `/staff/${ids.cashier}`, { permissionOverrides: { TASK_SKIP: "ALLOW" } });
+    expect((await w.as(w.cashier, "POST", `/tasks/occurrences/${o.id}/skip`, { reason: "busy" })).body.error).toBe("TASK_NOT_YOURS");
+
+    const byManager = await w.as(w.manager, "POST", `/tasks/occurrences/${o.id}/skip`, { reason: "Safe was counted at close" });
+    expect(byManager.status).toBe(200);
+    expect(byManager.body.occurrence).toMatchObject({ status: "SKIPPED", completedBy: { id: ids.manager } });
+  });
+
   it("a manager reopens a done or skipped task; the checklist progress stays", async () => {
     const t = await mk({ title: "Open up", checklist: ["Lights", "Float"] });
     const o = await occ(t.id, today);
@@ -349,6 +397,44 @@ describe("defining tasks", () => {
     expect((await w.as(w.cashier, "PATCH", `/tasks/${t.id}`, { title: "x" })).status).toBe(403);
   });
 
+  it("a schedule change never creates backdated overdue days", async () => {
+    // Weekly on one weekday since last week; switch it to a weekday that also fell in the past week.
+    const oldDay = day(-5);
+    const newDay = day(-3);
+    const t = await mk({ title: "Water the plants", recurrence: "WEEKLY", daysOfWeek: [weekdayOf(oldDay)], startsOn: day(-9) });
+    const before = (await occurrences(t.id)).map((o) => o.dueOn.toISOString().slice(0, 10));
+    expect(before).toContain(oldDay);
+    expect(before).not.toContain(newDay);
+
+    const changed = await w.as(w.manager, "PATCH", `/tasks/${t.id}`, { daysOfWeek: [weekdayOf(newDay)] });
+    expect(changed.status).toBe(200);
+    const after = (await occurrences(t.id)).filter((o) => o.status === "OPEN").map((o) => o.dueOn.toISOString().slice(0, 10));
+    // The old weekday's past instance stays (it was really due); the new weekday only exists from today on.
+    expect(after).toContain(oldDay);
+    expect(after).not.toContain(newDay);
+    expect(after.filter((d) => d >= day(0))).toEqual([day(4)]);
+    const mine = await w.as(w.cashier, "GET", `/tasks/mine?locationId=${w.locationId}`);
+    expect(mine.body.overdue.filter((o: { taskId: string }) => o.taskId === t.id).map((o: { dueOn: string }) => o.dueOn)).toEqual([oldDay]);
+  });
+
+  it("a task still assigned to a deactivated employee can be edited, but not newly assigned to them", async () => {
+    const t = await mk({ title: "Sort singles", assigneeType: "EMPLOYEE", assigneeId: ids.cashier });
+    const other = await mk({ title: "Sort bulk" });
+    expect((await w.as(w.owner, "PATCH", `/staff/${ids.cashier}`, { active: false })).status).toBe(200);
+
+    const renamed = await w.as(w.manager, "PATCH", `/tasks/${t.id}`, { title: "Sort singles (new bin)", instructions: "Use the blue bin" });
+    expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
+    expect(renamed.body.task).toMatchObject({ title: "Sort singles (new bin)", assigneeId: ids.cashier });
+    expect((await w.as(w.manager, "PATCH", `/tasks/${t.id}`, { dueTime: "11:00" })).status).toBe(200);
+    expect((await w.as(w.manager, "PATCH", `/tasks/${t.id}`, { active: false })).body.task.active).toBe(false);
+
+    // Choosing them afresh is still refused; so is pointing an existing employee task at them.
+    const toThem = await w.as(w.manager, "PATCH", `/tasks/${other.id}`, { assigneeType: "EMPLOYEE", assigneeId: ids.cashier });
+    expect(toThem.status).toBe(400);
+    expect(toThem.body.error).toBe("ASSIGNEE");
+    expect((await w.as(w.manager, "POST", "/tasks", { locationId: w.locationId, recurrence: "DAILY", startsOn: today, title: "New", assigneeType: "EMPLOYEE", assigneeId: ids.cashier })).body.error).toBe("ASSIGNEE");
+  });
+
   it("deactivating stops future occurrences and keeps the completed ones", async () => {
     const t = await mk({ title: "Sweep", startsOn: day(-1) });
     const yesterday = await occ(t.id, day(-1));
@@ -392,6 +478,28 @@ describe("the board and the history", () => {
     expect((await w.as(w.manager, "GET", `/tasks/occurrences?status=DONE&staffId=${ids.cashier}`)).body.occurrences).toHaveLength(1);
     expect((await w.as(w.manager, "GET", `/tasks/occurrences?taskId=${old.id}`)).body.occurrences).toHaveLength(1);
   });
+
+  it("viewing an old day creates that day only, not every day since, and still covers today", async () => {
+    const t = await mk({ title: "Open up", startsOn: "2026-01-01" });
+    expect(await occurrences(t.id)).toHaveLength(14 + 1 + 7);
+    expect((await mine(w.cashier)).counts.overdue).toBe(14);
+
+    const old = await w.as(w.manager, "GET", `/tasks/board?locationId=${w.locationId}&date=${day(-60)}`);
+    expect(old.status).toBe(200);
+    expect(old.body.occurrences.map((o: any) => [o.title, o.dueOn, o.status])).toEqual([["Open up", day(-60), "OPEN"]]);
+    expect(await occurrences(t.id)).toHaveLength(23);
+    // That one backfilled day is overdue on the board, but the days between it and the window never appear.
+    expect(old.body.overdue.map((o: any) => o.dueOn)).toEqual([...Array.from({ length: 14 }, (_, i) => day(i - 14))]);
+    expect((await mine(w.cashier)).counts.overdue).toBe(15);
+
+    // A brand-new store with an every-store task: a far-past day still gets today's occurrence made.
+    const uptown = await prisma.location.create({ data: { name: "Uptown" } });
+    await mk({ title: "Everywhere", locationId: null, startsOn: "2024-01-01" });
+    const far = await w.as(w.manager, "GET", `/tasks/board?locationId=${uptown.id}&date=${day(-500)}`);
+    expect(far.body.occurrences.map((o: any) => o.dueOn)).toEqual([day(-500)]);
+    const atUptown = await prisma.taskOccurrence.findMany({ where: { locationId: uptown.id }, orderBy: { dueOn: "asc" } });
+    expect(atUptown.map((o) => o.dueOn.toISOString().slice(0, 10))).toEqual([day(-500), ...Array.from({ length: 22 }, (_, i) => day(i - 14))]);
+  });
 });
 
 describe("the report", () => {
@@ -427,6 +535,20 @@ describe("the report", () => {
     const [header, first] = csv.body.split("\n");
     expect(header).toBe("taskId,title,recurrence,due,done,late,skipped,missed,completionRate");
     expect(first).toBe(`${other.id},Count the safe,ONCE,1,1,1,0,0,1`);
+  });
+
+  it("never backfills history: a report over the distant past makes no occurrences and changes nobody's overdue list", async () => {
+    const t = await mk({ title: "Open up", startsOn: "2026-01-01" });
+    expect(await occurrences(t.id)).toHaveLength(22);
+    expect((await mine(w.cashier)).counts.overdue).toBe(14);
+    const r = await w.as(w.manager, "GET", `/tasks/report?from=2026-01-01&to=2026-01-31`);
+    expect(r.status).toBe(200);
+    expect(r.body.totals).toMatchObject({ due: 0, missed: 0 });
+    expect(await occurrences(t.id)).toHaveLength(22);
+    expect((await mine(w.cashier)).counts.overdue).toBe(14);
+    // A range reaching back past the window only counts what was materialized.
+    expect((await w.as(w.manager, "GET", `/tasks/report?from=2026-01-01&to=${today}`)).body.totals).toMatchObject({ due: 15, missed: 14 });
+    expect(await occurrences(t.id)).toHaveLength(22);
   });
 
   it("is open to anyone with VIEW_REPORTS, even without MANAGE_TASKS", async () => {

@@ -1402,6 +1402,9 @@ model Task {
   /// Completing requires a note (e.g. a reading or a count)
   requireNote  Boolean        @default(false)
   active       Boolean        @default(true)
+  /// When the schedule was last (re)defined. Days before it are never created, so a
+  /// task defined or rescheduled today never shows backdated "overdue" days.
+  scheduleChangedAt DateTime  @default(now())
   createdById  String?
   createdBy    Staff?         @relation("TaskCreatedBy", fields: [createdById], references: [id])
   createdAt    DateTime       @default(now())
