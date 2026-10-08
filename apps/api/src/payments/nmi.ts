@@ -35,7 +35,7 @@ export class NmiGateway implements PaymentGateway {
   }
 
   async sale(req: SaleRequest): Promise<GatewayResult> {
-    if (req.terminalId) {
+    if (req.terminal) {
       // Card-present on NMI goes through their Customer-Present Cloud device API,
       // which is asynchronous and device-specific. Wire it up for your terminal model here.
       return { approved: false, message: "Card-present terminals are not yet configured for NMI" };

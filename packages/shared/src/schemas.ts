@@ -108,6 +108,8 @@ export const RefundInput = z.object({
   /** Where the money goes. Defaults to original tenders, card first. */
   toStoreCredit: z.boolean().default(false),
   reason: z.string().optional(),
+  /** Card terminal to run card refunds on; defaults to the one that took the payment. */
+  terminalId: id.optional(),
 });
 export type RefundInput = z.infer<typeof RefundInput>;
 

@@ -7,6 +7,7 @@ import { Button } from "../components/Button";
 import { CustomerPicker } from "../components/CustomerPicker";
 import { ProductSearch, variantLabel } from "../components/ProductSearch";
 import { RewardsPicker } from "../components/RewardsPicker";
+import { TerminalPicker, useTerminal } from "../components/TerminalPicker";
 import { isManager, useSession } from "../session";
 import { colors, ui } from "../theme";
 
@@ -17,8 +18,7 @@ interface Line {
   discountCents: number;
 }
 
-/** Card-present terminal id for this register; empty uses the dev mock token. */
-const TERMINAL_ID = process.env.EXPO_PUBLIC_TERMINAL_ID ?? "";
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export function SellScreen() {
   const { location, staff } = useSession();
@@ -215,8 +215,12 @@ function TenderSheet(props: {
   submit: (tenders: TenderInput[], idempotencyKey: string) => Promise<{ order: { number: number }; changeCents: number }>;
   onDone: () => void;
 }) {
-  // One key per sale attempt: retries reuse it so the card is never double-charged.
-  const [idempotencyKey] = useState(() => Crypto.randomUUID());
+  // One key per sale attempt: network retries reuse it so the card is never
+  // double-charged. A new key is only minted after a definite failure.
+  const [idempotencyKey, setIdempotencyKey] = useState(() => Crypto.randomUUID());
+  const { terminals, terminal, select } = useTerminal();
+  const [pickingTerminal, setPickingTerminal] = useState(false);
+  const [waitingOnCard, setWaitingOnCard] = useState(false);
   const [tenders, setTenders] = useState<TenderInput[]>([]);
   const [cashInput, setCashInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -235,8 +239,13 @@ function TenderSheet(props: {
     setTenders((t) => [...t, { type: "CASH", amountCents: Math.min(handed, due), tenderedCents: handed }]);
     setCashInput("");
   };
-  const addCard = () =>
-    due > 0 && setTenders((t) => [...t, { type: "CARD", amountCents: due, ...(TERMINAL_ID ? { terminalId: TERMINAL_ID } : { paymentToken: "tok_ok" }) }]);
+  const addCard = () => {
+    if (due <= 0) return;
+    if (terminal) return setTenders((t) => [...t, { type: "CARD", amountCents: due, terminalId: terminal.id }]);
+    // Development without a terminal: the API's mock processor approves this token.
+    if (__DEV__ && terminals?.length === 0) return setTenders((t) => [...t, { type: "CARD", amountCents: due, paymentToken: "tok_ok" }]);
+    setPickingTerminal(true);
+  };
   const addCredit = () => {
     const amt = Math.min(due, credit - creditUsed);
     if (amt > 0) setTenders((t) => [...t, { type: "STORE_CREDIT", amountCents: amt }]);
@@ -250,13 +259,32 @@ function TenderSheet(props: {
   async function complete() {
     setBusy(true);
     setError(null);
+    setWaitingOnCard(tenders.some((t) => t.type === "CARD" && t.terminalId));
     try {
-      const r = await props.submit(tenders, idempotencyKey);
-      setReceipt({ number: r.order.number, changeCents: r.changeCents });
+      // The server holds the request open while the customer pays on the
+      // terminal. If our connection drops and we resubmit, it tells us the
+      // first attempt is still running, so we wait instead of charging again.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const r = await props.submit(tenders, idempotencyKey);
+          setReceipt({ number: r.order.number, changeCents: r.changeCents });
+          return;
+        } catch (e) {
+          if (e instanceof ApiError && e.code === "SALE_IN_PROGRESS" && attempt < 80) {
+            await sleep(3000);
+            continue;
+          }
+          throw e;
+        }
+      }
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
+      // Declines, unknown outcomes, and validation errors closed out this attempt;
+      // only a network failure leaves it open to retry with the same key.
+      if (!(e instanceof ApiError && e.code === "NETWORK")) setIdempotencyKey(Crypto.randomUUID());
     } finally {
       setBusy(false);
+      setWaitingOnCard(false);
     }
   }
 
@@ -313,7 +341,13 @@ function TenderSheet(props: {
                   </View>
                 </>
               )}
+              {waitingOnCard && (
+                <Text style={[ui.h2, { color: colors.accent, textAlign: "center" }]}>Tap, insert, or swipe on {terminal?.name ?? "the terminal"}</Text>
+              )}
               {error && <Text style={ui.error}>{error}</Text>}
+              <Pressable onPress={() => setPickingTerminal(true)} disabled={busy}>
+                <Text style={ui.muted}>Terminal: {terminal ? terminal.name : "none selected"} · change</Text>
+              </Pressable>
               <View style={[ui.row, { gap: 8 }]}>
                 <Button title="Back" kind="secondary" onPress={props.onCancel} disabled={busy} />
                 <Button title="Complete sale" kind="good" onPress={complete} disabled={due !== 0} busy={busy} style={{ flex: 1 }} />
@@ -322,6 +356,9 @@ function TenderSheet(props: {
           )}
         </ScrollView>
       </View>
+      {pickingTerminal && terminals && (
+        <TerminalPicker terminals={terminals} selectedId={terminal?.id} onSelect={select} onClose={() => setPickingTerminal(false)} />
+      )}
     </Modal>
   );
 }

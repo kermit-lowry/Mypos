@@ -2,7 +2,9 @@ import { Prisma, type ProductKind } from "@prisma/client";
 import { applyBps, cartTotals, earnFor, type CheckoutInput, type TenderType } from "@mypos/shared";
 import type { Tx } from "../db.js";
 import { AppError, badRequest, conflict, forbidden, notFound, paymentFailed } from "../errors.js";
+import { config } from "../config.js";
 import type { GatewayResult } from "../payments/gateway.js";
+import { recordUnknownCharge, resolveTerminal, voidCharges, type Charge, type ResolvedTerminal } from "./charges.js";
 import { hasRole, type Ctx } from "./context.js";
 import { moveInventory } from "./inventory.js";
 import { earns, getProgram, loyaltyBalances, postLoyalty, priceRewards, unitFor } from "./loyalty.js";
@@ -123,6 +125,12 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
     }
   }
 
+  // Card-present tenders: resolve the register's terminal before opening the order.
+  const terminals = new Map<number, ResolvedTerminal>();
+  for (const [i, t] of input.tenders.entries()) {
+    if (t.type === "CARD" && t.terminalId) terminals.set(i, await resolveTerminal(prisma, t.terminalId, location.id));
+  }
+
   // ── Open the order (claims the idempotency key) ────────────
   let order: { id: string; number: number; lineIds: string[] };
   try {
@@ -167,27 +175,35 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
   }
 
   // ── Charge cards (outside the DB transaction) ──────────────
-  const approved: { tenderIndex: number; result: GatewayResult }[] = [];
+  // Card-present sales wait here while the customer taps on the terminal.
+  const approved: (Charge & { tenderIndex: number })[] = [];
   for (const [i, t] of input.tenders.entries()) {
     if (t.type !== "CARD") continue;
+    const terminal = terminals.get(i);
     let result: GatewayResult;
     try {
       result = await gateway.sale({
         amountCents: t.amountCents,
-        currency: "USD",
+        currency: config.currency,
         paymentToken: t.paymentToken,
-        terminalId: t.terminalId,
+        terminal,
         orderRef: String(order.number),
         idempotencyKey: `${input.idempotencyKey}:${i}`,
       });
     } catch (e) {
-      result = { approved: false, message: e instanceof Error ? e.message : "Gateway error" };
+      // A thrown error means we don't know if the charge went through.
+      result = { approved: false, pending: true, message: e instanceof Error ? e.message : "Gateway error" };
+    }
+    if (result.pending) {
+      await voidCharges(ctx, { orderId: order.id }, approved);
+      await prisma.order.update({ where: { id: order.id }, data: { status: "VOID" } });
+      throw await recordUnknownCharge(ctx, { orderId: order.id }, { result, amountCents: t.amountCents, terminal });
     }
     if (!result.approved) {
-      await rollbackCharges(ctx, order.id, approved.map((a) => a.result));
+      await rollbackCharges(ctx, order.id, approved);
       throw paymentFailed(result.message ?? "Card declined", { orderId: order.id });
     }
-    approved.push({ tenderIndex: i, result });
+    approved.push({ tenderIndex: i, result, amountCents: t.amountCents, terminal });
   }
 
   // ── Commit stock, credit, payouts, registrations ───────────
@@ -212,7 +228,8 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
       }
 
       for (const [i, t] of input.tenders.entries()) {
-        const card = approved.find((a) => a.tenderIndex === i)?.result;
+        const charge = approved.find((a) => a.tenderIndex === i);
+        const card = charge?.result;
         if (t.type === "STORE_CREDIT") {
           await postCredit(tx, { customerId: input.customerId!, amountCents: -t.amountCents, reason: "Purchase", orderId: order.id });
         }
@@ -232,7 +249,8 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
             amountCents: t.amountCents,
             tender: t.type,
             status: "APPROVED",
-            gateway: card ? gateway.name : null,
+            gateway: card ? (card.gateway ?? gateway.name) : null,
+            terminalId: charge?.terminal?.id,
             gatewayRef: card?.gatewayRef ?? t.giftCardCode ?? t.reference,
             cardBrand: card?.cardBrand,
             cardLast4: card?.cardLast4,
@@ -280,7 +298,7 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
       });
     });
   } catch (e) {
-    await rollbackCharges(ctx, order.id, approved.map((a) => a.result));
+    await rollbackCharges(ctx, order.id, approved);
     throw e;
   }
 
@@ -288,29 +306,9 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
   return { order: final, changeCents, replayed: false };
 }
 
-/** Void any approved card charges and mark the order void. Best effort: a failed void is recorded for manual follow-up. */
-async function rollbackCharges(ctx: Ctx, orderId: string, charges: GatewayResult[]): Promise<void> {
-  for (const c of charges) {
-    if (!c.gatewayRef) continue;
-    let voided: GatewayResult;
-    try {
-      voided = await ctx.gateway.void(c.gatewayRef);
-    } catch (e) {
-      voided = { approved: false, message: e instanceof Error ? e.message : "void failed" };
-    }
-    await ctx.prisma.payment.create({
-      data: {
-        orderId,
-        amountCents: 0,
-        tender: "CARD",
-        status: voided.approved ? "VOIDED" : "PENDING",
-        gateway: ctx.gateway.name,
-        gatewayRef: c.gatewayRef,
-        cardLast4: c.cardLast4,
-        raw: { action: "void", ok: voided.approved, message: voided.message ?? null } as Prisma.InputJsonValue,
-      },
-    });
-  }
+/** Void any approved card charges and mark the order void. */
+async function rollbackCharges(ctx: Ctx, orderId: string, charges: Charge[]): Promise<void> {
+  await voidCharges(ctx, { orderId }, charges);
   await ctx.prisma.order.update({ where: { id: orderId }, data: { status: "VOID" } });
 }
 

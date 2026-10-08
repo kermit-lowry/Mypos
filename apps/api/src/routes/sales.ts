@@ -20,6 +20,10 @@ export function salesRoutes(app: FastifyInstance, base: Ctx) {
     if (result.replayed && result.order.status === "VOID") {
       throw conflict("ORDER_VOID", "This sale failed earlier; start a new sale", { orderId: result.order.id });
     }
+    if (result.replayed && result.order.status === "OPEN") {
+      // The first attempt is still waiting on the card terminal.
+      throw conflict("SALE_IN_PROGRESS", "Still waiting for the card terminal", { orderId: result.order.id });
+    }
     return reply.code(result.replayed ? 200 : 201).send(result);
   });
 

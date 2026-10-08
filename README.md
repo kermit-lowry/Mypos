@@ -51,19 +51,43 @@ pnpm test
 
 ## Payments
 
-Payments go through `apps/api/src/payments/gateway.ts`, a small interface
-(`sale`, `refund`, `void`). Pick one with `PAYMENT_GATEWAY`:
+In-store cards run on **PAX terminals through Handpoint's Cloud API**. Online
+cards (the web store) go through a separate card-not-present processor. A router
+(`apps/api/src/payments/router.ts`) picks the processor for each sale and sends
+refunds and voids back to whichever one took the original payment.
 
-- `mock` — for dev and tests. Token `tok_decline` declines.
-- `nmi` — NMI Direct Post with Collect.js tokens. Also works for NMI white-label gateways (change the endpoint).
-- `authorizenet` — Authorize.net with Accept.js opaque data (`descriptor:value`).
+**In store (Handpoint + PAX).** Set `HANDPOINT_API_KEY` and `HANDPOINT_ENV`
+(`development` → cloud.handpoint.io, `production` → cloud.handpoint.com). Then a
+manager runs `POST /terminals/sync` to import the merchant's terminals, and each
+register picks its terminal once. A sale is sent to that terminal and the server
+waits while the customer taps or inserts. If the result never arrives, it asks
+Handpoint's status API, which can confirm the card was not charged once 90s
+have passed.
 
-To add another processor, implement the interface and register it in `payments/index.ts`.
+When the outcome is genuinely unknown (terminal went offline mid-sale), the sale
+is cancelled at the register and the payment is flagged as pending; it is never
+treated as a decline. Managers see these at `GET /payments/pending` and
+`POST /payments/:id/resolve` looks the payment up: if it was charged, it's voided
+on the terminal; if not, it's closed. Partial approvals (US) are released
+automatically so the cashier can split the payment. Refunds run on the terminal
+that took the payment, or one the manager picks.
+
+Without a Handpoint key, a mock terminal processor approves everything for development.
+
+**Online.** Pick one with `PAYMENT_GATEWAY`:
+
+- `mock`: for dev and tests. Token `tok_decline` declines.
+- `nmi`: NMI Direct Post with Collect.js tokens. Also works for NMI white-label gateways (change the endpoint).
+- `authorizenet`: Authorize.net with Accept.js opaque data (`descriptor:value`).
+
+To add a processor, implement `PaymentGateway` (`payments/gateway.ts`) and register it in `payments/index.ts`.
 
 ## Not done yet
 
-- **Card-present terminals.** The interface takes a `terminalId`, but no real
-  terminal is wired up yet. This depends on which devices and processor you use.
+- **Handpoint hasn't been run against a live account or a real PAX terminal.**
+  It's built from their REST API 2.30 docs and tested against a scripted fake.
+  Results are fetched by polling; Handpoint's callback URL option (needs a public
+  HTTPS endpoint) would cut latency slightly. Tipping on the terminal isn't wired up.
 - **TCGplayer.** Inventory push follows TCGplayer's published API but hasn't
   been tested against a live seller account. Order import isn't built yet.
   Their API is invite-only.

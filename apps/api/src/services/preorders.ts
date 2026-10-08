@@ -1,7 +1,9 @@
 import type { z } from "zod";
 import type { PreorderInput, PreorderProductInput, TenderInput } from "@mypos/shared";
 import { badRequest, conflict, notFound, paymentFailed } from "../errors.js";
+import { config } from "../config.js";
 import type { GatewayResult } from "../payments/gateway.js";
+import { followUpTerminal, recordUnknownCharge, resolveTerminal, voidCharges, type Charge } from "./charges.js";
 import { checkout } from "./checkout.js";
 import type { Ctx } from "./context.js";
 import { postCredit } from "./storeCredit.js";
@@ -67,34 +69,45 @@ export async function placePreorder(ctx: Ctx, input: PreorderInput) {
     });
   });
 
-  const approved: { tender: TenderInput; result: GatewayResult }[] = [];
+  const approved: (Charge & { tender: TenderInput })[] = [];
+  const link = { preorderId: preorder.id };
   const undo = async () => {
-    for (const a of approved) if (a.result.gatewayRef) await gateway.void(a.result.gatewayRef).catch(() => undefined);
+    await voidCharges(ctx, link, approved);
     await prisma.preorder.update({ where: { id: preorder.id }, data: { status: "CANCELLED" } });
   };
 
-  for (const t of input.tenders.filter((t) => t.type === "CARD")) {
+  for (const [i, t] of input.tenders.entries()) {
+    if (t.type !== "CARD") continue;
+    const terminal = t.terminalId ? await resolveTerminal(prisma, t.terminalId, input.locationId).catch(async (e) => {
+      await undo();
+      throw e;
+    }) : undefined;
     const result = await gateway
       .sale({
         amountCents: t.amountCents,
-        currency: "USD",
+        currency: config.currency,
         paymentToken: t.paymentToken,
-        terminalId: t.terminalId,
+        terminal,
         orderRef: `PRE-${preorder.id}`,
-        idempotencyKey: `${input.idempotencyKey}:${approved.length}`,
+        idempotencyKey: `${input.idempotencyKey}:${i}`,
       })
-      .catch((e: unknown): GatewayResult => ({ approved: false, message: e instanceof Error ? e.message : "Gateway error" }));
+      .catch((e: unknown): GatewayResult => ({ approved: false, pending: true, message: e instanceof Error ? e.message : "Gateway error" }));
+    if (result.pending) {
+      await undo();
+      throw await recordUnknownCharge(ctx, link, { result, amountCents: t.amountCents, terminal });
+    }
     if (!result.approved) {
       await undo();
       throw paymentFailed(result.message ?? "Card declined");
     }
-    approved.push({ tender: t, result });
+    approved.push({ tender: t, result, amountCents: t.amountCents, terminal });
   }
 
   try {
     return await prisma.$transaction(async (tx) => {
       for (const t of input.tenders) {
-        const card = approved.find((a) => a.tender === t)?.result;
+        const charge = approved.find((a) => a.tender === t);
+        const card = charge?.result;
         if (t.type === "STORE_CREDIT") {
           await postCredit(tx, { customerId: input.customerId, amountCents: -t.amountCents, reason: "Preorder deposit" });
         }
@@ -104,7 +117,8 @@ export async function placePreorder(ctx: Ctx, input: PreorderInput) {
             amountCents: t.amountCents,
             tender: t.type,
             status: "APPROVED",
-            gateway: card ? gateway.name : null,
+            gateway: card ? (card.gateway ?? gateway.name) : null,
+            terminalId: charge?.terminal?.id,
             gatewayRef: card?.gatewayRef,
             cardBrand: card?.cardBrand,
             cardLast4: card?.cardLast4,
@@ -148,9 +162,9 @@ export async function fulfillPreorder(
 }
 
 /** Cancel and return the deposit to store credit or the original card. */
-export async function cancelPreorder(ctx: Ctx, preorderId: string, toStoreCredit: boolean) {
+export async function cancelPreorder(ctx: Ctx, preorderId: string, toStoreCredit: boolean, terminalId?: string) {
   const { prisma, gateway } = ctx;
-  const cardRefunds = await prisma.$transaction(async (tx) => {
+  const { cards: cardRefunds, locationId } = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "Preorder" WHERE id = ${preorderId} FOR UPDATE`;
     const pre = await tx.preorder.findUnique({ where: { id: preorderId }, include: { payments: true } });
     if (!pre) throw notFound("Preorder");
@@ -171,12 +185,13 @@ export async function cancelPreorder(ctx: Ctx, preorderId: string, toStoreCredit
         data: { preorderId: pre.id, amountCents: -p.amountCents, tender: toStoreCredit ? "STORE_CREDIT" : p.tender, status: "APPROVED", refundOfId: p.id },
       });
     }
-    return cards;
+    return { cards, locationId: pre.locationId };
   });
 
   for (const p of cardRefunds) {
+    const terminal = await followUpTerminal(prisma, locationId, terminalId, p.terminalId);
     const r = await gateway
-      .refund(p.gatewayRef!, p.amountCents, p.cardLast4 ?? undefined)
+      .refund(p.gatewayRef!, p.amountCents, { cardLast4: p.cardLast4 ?? undefined, terminal, gateway: p.gateway ?? undefined })
       .catch((e: unknown): GatewayResult => ({ approved: false, message: e instanceof Error ? e.message : "Gateway error" }));
     await prisma.payment.create({
       data: {
@@ -184,8 +199,9 @@ export async function cancelPreorder(ctx: Ctx, preorderId: string, toStoreCredit
         amountCents: -p.amountCents,
         tender: "CARD",
         status: r.approved ? "APPROVED" : "PENDING",
-        gateway: gateway.name,
+        gateway: r.gateway ?? p.gateway,
         gatewayRef: r.gatewayRef ?? p.gatewayRef,
+        terminalId: terminal?.id,
         refundOfId: p.id,
         raw: r.message ? { message: r.message } : undefined,
       },

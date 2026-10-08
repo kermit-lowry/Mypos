@@ -1,4 +1,4 @@
-import type { GatewayResult, PaymentGateway, SaleRequest } from "./gateway.js";
+import type { FollowUpOptions, GatewayResult, PaymentGateway, SaleRequest } from "./gateway.js";
 
 /**
  * Authorize.net JSON API. Card-not-present uses Accept.js opaque data; pass
@@ -42,7 +42,7 @@ export class AuthorizeNetGateway implements PaymentGateway {
   }
 
   async sale(req: SaleRequest): Promise<GatewayResult> {
-    if (req.terminalId) return { approved: false, message: "Card-present terminals are not yet configured for Authorize.net" };
+    if (req.terminal) return { approved: false, message: "Card-present terminals are not yet configured for Authorize.net" };
     const [dataDescriptor, dataValue] = (req.paymentToken ?? "").split(":");
     if (!dataDescriptor || !dataValue) return { approved: false, message: "Missing Accept.js opaque data" };
     return this.request({
@@ -53,7 +53,8 @@ export class AuthorizeNetGateway implements PaymentGateway {
     });
   }
 
-  async refund(gatewayRef: string, amountCents: number, cardLast4?: string): Promise<GatewayResult> {
+  async refund(gatewayRef: string, amountCents: number, opts: FollowUpOptions = {}): Promise<GatewayResult> {
+    const cardLast4 = opts.cardLast4;
     // Linked refunds need the card's last 4; expiration may be masked.
     if (!cardLast4) return { approved: false, message: "Authorize.net refunds require the card's last 4 digits" };
     return this.request({

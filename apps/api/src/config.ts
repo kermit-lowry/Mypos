@@ -14,6 +14,11 @@ export const config = {
     transactionKey: process.env.AUTHNET_TRANSACTION_KEY ?? "",
     sandbox: process.env.AUTHNET_SANDBOX !== "false",
   },
+  currency: process.env.CURRENCY ?? "USD",
+  handpoint: {
+    apiKey: process.env.HANDPOINT_API_KEY ?? "",
+    environment: (process.env.HANDPOINT_ENV === "production" ? "production" : "development") as "production" | "development",
+  },
   pokemonTcgApiKey: process.env.POKEMONTCG_API_KEY ?? "",
   shopify: {
     shop: process.env.SHOPIFY_SHOP ?? "",

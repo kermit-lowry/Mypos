@@ -2,6 +2,7 @@ import type { Payment } from "@prisma/client";
 import { roundHalfUp, type RefundInput } from "@mypos/shared";
 import { badRequest, conflict, notFound } from "../errors.js";
 import type { Ctx } from "./context.js";
+import { followUpTerminal } from "./charges.js";
 import { moveInventory } from "./inventory.js";
 import { postLoyalty } from "./loyalty.js";
 import { postCredit } from "./storeCredit.js";
@@ -26,7 +27,7 @@ export async function refundOrder(ctx: Ctx, input: RefundInput): Promise<RefundR
 
   // Everything except card refunds happens in one transaction that also claims
   // the refunded quantities, so the same items can never be refunded twice.
-  const { refundCents, cardLegs, legs, orderId } = await prisma.$transaction(async (tx) => {
+  const { refundCents, cardLegs, legs, orderId, locationId } = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${input.orderId} FOR UPDATE`;
     const order = await tx.order.findUnique({
       where: { id: input.orderId },
@@ -176,7 +177,7 @@ export async function refundOrder(ctx: Ctx, input: RefundInput): Promise<RefundR
     }
     await tx.order.update({ where: { id: order.id }, data: { status: fully ? "REFUNDED" : "PARTIALLY_REFUNDED" } });
 
-    return { refundCents: total, cardLegs, legs, orderId: order.id };
+    return { refundCents: total, cardLegs, legs, orderId: order.id, locationId: order.locationId };
   });
 
   // Card refunds go to the processor after the claim commits. A failure is
@@ -185,8 +186,16 @@ export async function refundOrder(ctx: Ctx, input: RefundInput): Promise<RefundR
     let ok = false;
     let message: string | undefined;
     let ref: string | undefined;
+    let terminalId: string | undefined;
     try {
-      const r = await gateway.refund(payment.gatewayRef!, amountCents, payment.cardLast4 ?? undefined);
+      // Card-present refunds run on a terminal: the one picked, else the original.
+      const terminal = await followUpTerminal(prisma, locationId, input.terminalId, payment.terminalId);
+      terminalId = terminal?.id;
+      const r = await gateway.refund(payment.gatewayRef!, amountCents, {
+        cardLast4: payment.cardLast4 ?? undefined,
+        terminal,
+        gateway: payment.gateway ?? undefined,
+      });
       ok = r.approved;
       message = r.message;
       ref = r.gatewayRef;
@@ -199,9 +208,10 @@ export async function refundOrder(ctx: Ctx, input: RefundInput): Promise<RefundR
         amountCents: -amountCents,
         tender: "CARD",
         status: ok ? "APPROVED" : "PENDING",
-        gateway: gateway.name,
+        gateway: payment.gateway,
         gatewayRef: ref ?? payment.gatewayRef,
         cardLast4: payment.cardLast4,
+        terminalId,
         refundOfId: payment.id,
         raw: message ? { message } : undefined,
       },

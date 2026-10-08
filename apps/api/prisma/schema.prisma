@@ -55,8 +55,11 @@ model Terminal {
   locationId String
   location   Location @relation(fields: [locationId], references: [id])
   name       String
-  /// Device identifier on the gateway (e.g. NMI device GUID).
-  gatewayRef String
+  /// Device identifier on the processor (Handpoint: serial_number).
+  gatewayRef String   @unique
+  /// Device model (Handpoint: terminal_type, e.g. PAXA920PRO).
+  model      String?
+  active     Boolean  @default(true)
   createdAt  DateTime @default(now())
 }
 
@@ -366,6 +369,8 @@ model Payment {
   cardLast4   String?
   /// For cash: change handed back.
   changeCents Int?
+  /// Card-present terminal the payment ran on.
+  terminalId  String?
   /// Set on refund rows: the original payment being refunded.
   refundOfId  String?
   raw         Json?

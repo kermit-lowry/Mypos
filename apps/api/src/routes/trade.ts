@@ -70,7 +70,10 @@ export function tradeRoutes(app: FastifyInstance, base: Ctx) {
     ),
   );
   app.post("/preorders/:id/cancel", manager, async (req) => {
-    const { toStoreCredit } = parse(z.object({ toStoreCredit: z.boolean().default(false) }), req.body ?? {});
-    return preorders.cancelPreorder(ctx(req), id(req), toStoreCredit);
+    const { toStoreCredit, terminalId } = parse(
+      z.object({ toStoreCredit: z.boolean().default(false), terminalId: z.string().optional() }),
+      req.body ?? {},
+    );
+    return preorders.cancelPreorder(ctx(req), id(req), toStoreCredit, terminalId);
   });
 }

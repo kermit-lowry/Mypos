@@ -1,0 +1,52 @@
+import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+import { parse, requireRole } from "../http.js";
+import type { TerminalRef } from "../payments/gateway.js";
+import type { Ctx } from "../services/context.js";
+import { reconcilePayment } from "../services/reconcile.js";
+
+export function terminalRoutes(app: FastifyInstance, base: Ctx) {
+  const { prisma, gateway } = base;
+  const staff = { preHandler: requireRole("CASHIER") };
+  const manager = { preHandler: requireRole("MANAGER") };
+
+  app.get("/terminals", staff, async (req) => {
+    const { locationId } = parse(z.object({ locationId: z.string().optional() }), req.query);
+    return prisma.terminal.findMany({ where: { locationId, active: true }, orderBy: { name: "asc" } });
+  });
+
+  /** Pull the merchant's PAX terminals from Handpoint. New ones are added to `locationId`; existing ones keep their name and location. */
+  app.post("/terminals/sync", manager, async (req) => {
+    const { locationId } = parse(z.object({ locationId: z.string() }), req.body);
+    const list = (gateway as { listTerminals?: () => Promise<TerminalRef[]> }).listTerminals;
+    if (!list) return { added: 0, terminals: [] };
+    const devices = await list.call(gateway);
+    let added = 0;
+    for (const d of devices) {
+      const existing = await prisma.terminal.findUnique({ where: { gatewayRef: d.ref } });
+      if (existing) {
+        await prisma.terminal.update({ where: { id: existing.id }, data: { model: d.model } });
+      } else {
+        await prisma.terminal.create({ data: { locationId, gatewayRef: d.ref, model: d.model, name: `${d.model ?? "Terminal"} ${d.ref.slice(-4)}` } });
+        added++;
+      }
+    }
+    return { added, terminals: await prisma.terminal.findMany({ where: { gatewayRef: { in: devices.map((d) => d.ref) } } }) };
+  });
+
+  app.patch("/terminals/:id", manager, async (req) => {
+    const { id } = req.params as { id: string };
+    const data = parse(z.object({ name: z.string().min(1).optional(), locationId: z.string().optional(), active: z.boolean().optional() }), req.body);
+    return prisma.terminal.update({ where: { id }, data });
+  });
+
+  /** Card payments a manager needs to look at: unknown outcomes, failed voids, failed refunds. */
+  app.get("/payments/pending", manager, async () =>
+    prisma.payment.findMany({ where: { status: "PENDING", tender: "CARD" }, orderBy: { createdAt: "desc" }, take: 100 }),
+  );
+
+  app.post("/payments/:id/resolve", manager, async (req) => {
+    const { id } = req.params as { id: string };
+    return reconcilePayment(base, id);
+  });
+}
