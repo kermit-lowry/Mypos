@@ -211,10 +211,10 @@ function Sidebar({ groups, current, onGo, staff }: { groups: NavGroup[]; current
         <Text style={[ui.h2, { fontSize: 16 }]}>MyPOS</Text>
         <Text style={ui.muted}>Back Office</Text>
       </View>
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 10 }}>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 8 }}>
         {groups.map((g) => (
-          <View key={g.label ?? g.items[0]!.id} style={{ marginBottom: g.label ? 10 : 2, gap: 2 }}>
-            {g.label && <Text style={{ color: colors.muted, fontSize: 11, fontWeight: "600", letterSpacing: 0.8, textTransform: "uppercase", paddingHorizontal: 10, paddingTop: 10, paddingBottom: 4 }}>{g.label}</Text>}
+          <View key={g.label ?? g.items[0]!.id} style={{ marginBottom: g.label ? 6 : 2, gap: 1 }}>
+            {g.label && <Text style={{ color: colors.muted, fontSize: 11, fontWeight: "600", letterSpacing: 0.8, textTransform: "uppercase", paddingHorizontal: 10, paddingTop: 8, paddingBottom: 3 }}>{g.label}</Text>}
             {g.items.map((item) => {
               const active = item.id === current;
               return (
@@ -223,7 +223,7 @@ function Sidebar({ groups, current, onGo, staff }: { groups: NavGroup[]; current
                   onPress={() => onGo(item.id)}
                   accessibilityRole="button"
                   accessibilityState={{ selected: active }}
-                  style={({ pressed }) => ({ paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, backgroundColor: active ? colors.accent : pressed ? colors.panelAlt : "transparent" })}
+                  style={({ pressed }) => ({ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 8, backgroundColor: active ? colors.accent : pressed ? colors.panelAlt : "transparent" })}
                 >
                   <Text style={{ color: colors.text, fontSize: 14, fontWeight: active ? "600" : "500" }}>{item.label}</Text>
                 </Pressable>
