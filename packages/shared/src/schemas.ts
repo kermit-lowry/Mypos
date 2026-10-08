@@ -9,6 +9,7 @@ import {
   TenderTypes,
 } from "./enums.js";
 import { LoyaltyTypes, RewardTypes } from "./loyalty.js";
+import { PromotionTypes } from "./promotions.js";
 
 const cents = z.number().int().nonnegative();
 const id = z.string().min(1);
@@ -51,6 +52,7 @@ export const ProductInput = z.object({
   pokemonTcgId: z.string().optional(),
   // Sneaker metadata
   styleCode: z.string().optional(),
+  categoryId: z.string().optional(),
   /** Which channels this product is published to. */
   channels: z.array(z.enum(SalesChannels)).default(["POS"]),
   variants: z.array(VariantInput).min(1),
@@ -230,3 +232,68 @@ export const RewardInput = z
     if (r.type === "ITEM" && !r.variantId && !r.productId) ctx.addIssue({ code: "custom", path: ["variantId"], message: "Pick the item" });
   });
 export type RewardInput = z.infer<typeof RewardInput>;
+
+const ids = z.array(z.string().min(1)).max(500).default([]);
+const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use 24-hour HH:MM");
+
+export const PromotionInput = z
+  .object({
+    name: z.string().min(1).max(120),
+    description: z.string().max(500).optional(),
+    active: z.boolean().default(true),
+    type: z.enum(PromotionTypes),
+    priority: z.number().int().min(0).max(10_000).default(100),
+    stackable: z.boolean().default(false),
+
+    targetAll: z.boolean().default(false),
+    productIds: ids,
+    variantIds: ids,
+    categoryIds: ids,
+    excludeProductIds: ids,
+    excludeCategoryIds: ids,
+    getProductIds: ids,
+    getVariantIds: ids,
+    getCategoryIds: ids,
+
+    percentBps: z.number().int().min(1).max(10_000).optional(),
+    amountCents: z.number().int().positive().optional(),
+    priceCents: z.number().int().nonnegative().optional(),
+    buyQty: z.number().int().min(1).max(100).optional(),
+    getQty: z.number().int().min(1).max(100).optional(),
+    getDiscountBps: z.number().int().min(1).max(10_000).optional(),
+    minQty: z.number().int().min(1).optional(),
+    minSubtotalCents: z.number().int().positive().optional(),
+    maxApplications: z.number().int().min(1).optional(),
+
+    startsAt: z.coerce.date().optional(),
+    endsAt: z.coerce.date().optional(),
+    dates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(366).default([]),
+    daysOfWeek: z.array(z.number().int().min(0).max(6)).max(7).default([]),
+    startTime: hhmm.optional(),
+    endTime: hhmm.optional(),
+
+    channels: z.array(z.enum(SalesChannels)).min(1).default(["POS", "STOREFRONT"]),
+    locationIds: ids,
+  })
+  .superRefine((p, ctx) => {
+    const need = (field: keyof typeof p, msg: string) => p[field] == null && ctx.addIssue({ code: "custom", path: [field], message: msg });
+    const hasTargets = p.targetAll || p.productIds.length + p.variantIds.length + p.categoryIds.length > 0;
+    if (!hasTargets) ctx.addIssue({ code: "custom", path: ["targetAll"], message: "Pick products, categories, or everything" });
+    if (p.type === "PERCENT_OFF") need("percentBps", "Set the % off");
+    if (p.type === "AMOUNT_OFF") need("amountCents", "Set the $ off");
+    if (p.type === "SALE_PRICE") need("priceCents", "Set the sale price");
+    if (p.type === "BUY_X_GET_Y") {
+      need("buyQty", "How many to buy");
+      need("getQty", "How many they get");
+    }
+    if (p.type === "MULTI_BUY") {
+      need("buyQty", "How many items");
+      need("priceCents", "Price for the group");
+    }
+    if (p.type === "ORDER_DISCOUNT" && p.percentBps == null && p.amountCents == null) {
+      ctx.addIssue({ code: "custom", path: ["percentBps"], message: "Set a % or $ off" });
+    }
+    if ((p.startTime == null) !== (p.endTime == null)) ctx.addIssue({ code: "custom", path: ["endTime"], message: "Set both start and end times" });
+    if (p.startsAt && p.endsAt && p.endsAt <= p.startsAt) ctx.addIssue({ code: "custom", path: ["endsAt"], message: "End must be after start" });
+  });
+export type PromotionInput = z.infer<typeof PromotionInput>;

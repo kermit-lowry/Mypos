@@ -119,6 +119,8 @@ export interface Totals {
 
 export interface LoyaltyQuote extends Totals {
   card: Totals;
+  lines: { variantId: string; promoDiscountCents: number; rewardDiscountCents: number; discountCents: number }[];
+  promotions: { promotionId: string; name: string; discountCents: number }[];
   rewardDiscounts: number[];
   pointsCost: number;
   earn: { unit: "POINTS" | "CENTS"; amount: number } | null;
@@ -130,6 +132,8 @@ export interface Location {
   taxRateBps: number;
   /** Dual pricing: card price = cash price + this many bps. 0 = off. */
   cardPriceBps: number;
+  /** Tenders besides card that pay the card price. */
+  cardPricedTenders: string[];
   labelPrinterHost: string | null;
   receiptHeader: string | null;
   receiptFooter: string | null;

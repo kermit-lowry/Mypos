@@ -8,6 +8,7 @@ import { recordUnknownCharge, resolveTerminal, voidCharges, type Charge, type Re
 import { hasRole, type Ctx } from "./context.js";
 import { moveInventory } from "./inventory.js";
 import { earns, getProgram, loyaltyBalances, postLoyalty, priceRewards, unitFor } from "./loyalty.js";
+import { applyDeals } from "./promotions.js";
 import { postCredit } from "./storeCredit.js";
 
 /** Products whose stock is not tracked as inventory. */
@@ -65,8 +66,17 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
       quantity: line.quantity,
       unitPriceCents,
       discountCents: Math.min(line.discountCents, unitPriceCents * line.quantity),
+      promoDiscountCents: 0,
       taxable: v.taxable,
     };
+  });
+
+  // ── Automated deals: run first; a manual discount can only take off what's left ──
+  const deals = await applyDeals(prisma, location, input.channel, priced);
+  priced.forEach((p, i) => {
+    const gross = p.unitPriceCents * p.quantity;
+    p.promoDiscountCents = Math.min(gross, deals.lineDiscounts[i]!);
+    p.discountCents = p.promoDiscountCents + Math.min(p.discountCents, gross - p.promoDiscountCents);
   });
 
   // ── Loyalty rewards (become line discounts, so tax is on the discounted price) ──
@@ -95,8 +105,8 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
   // ── Validate tenders ───────────────────────────────────────
   // Preorder deposits were collected at their stated amount and count at the cash price.
   const deposit = opts.preorder?.depositCents ?? 0;
-  const cashPricedPaid = input.tenders.filter((t) => !isCardPriced(t.type)).reduce((a, t) => a + t.amountCents, 0) + deposit;
-  const cardPaid = input.tenders.filter((t) => isCardPriced(t.type)).reduce((a, t) => a + t.amountCents, 0);
+  const cashPricedPaid = input.tenders.filter((t) => !isCardPriced(t.type, location.cardPricedTenders)).reduce((a, t) => a + t.amountCents, 0) + deposit;
+  const cardPaid = input.tenders.filter((t) => isCardPriced(t.type, location.cardPricedTenders)).reduce((a, t) => a + t.amountCents, 0);
   const cardDue = cardAmountDue(dual, cashPricedPaid);
   if (cashPricedPaid > totals.totalCents || cardPaid !== cardDue) {
     throw badRequest("TENDER_MISMATCH", "Tenders must equal the order total", {
@@ -116,6 +126,10 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
     if (t.type === "LOYALTY" && !input.customerId) throw badRequest("CUSTOMER_REQUIRED", "Rewards dollars need a customer");
     if (t.type === "GIFT_CARD" && !t.giftCardCode) throw badRequest("GIFT_CARD_CODE", "Gift card code required");
     if (t.type === "EXTERNAL" && !actor) throw forbidden("External tenders are staff-only");
+    if (t.type === "CHECK") {
+      if (!actor) throw forbidden("Checks are register-only");
+      if (!t.reference) throw badRequest("CHECK_NUMBER", "Enter the check number");
+    }
     if (t.type === "CASH") {
       if (!actor) throw forbidden("Cash is register-only");
       const handed = t.tenderedCents ?? t.amountCents;
@@ -170,6 +184,7 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
             unitPriceCents: p.unitPriceCents,
             discountCents: p.discountCents,
             rewardDiscountCents: rewardDiscounts[i]!,
+            promoDiscountCents: p.promoDiscountCents,
             earnsLoyalty: !!input.customerId && program.enabled && earns(program, p.variant.product.kind),
             taxable: p.taxable,
           },
@@ -310,6 +325,7 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
           loyaltyUnit: loyaltyEarned > 0 ? unitFor(program) : null,
           loyaltyEligibleCents,
           pointsRedeemed: redemption.pointsCost,
+          appliedPromotions: deals.applied as unknown as Prisma.InputJsonValue,
         },
       });
     });

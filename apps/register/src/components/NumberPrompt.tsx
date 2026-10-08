@@ -4,15 +4,25 @@ import { useLayout } from "../layout";
 import { colors, ui } from "../theme";
 import { Button } from "./Button";
 
-/** Cross-platform number entry (Alert.prompt only exists on iOS). */
-export function NumberPrompt(props: { title: string; message?: string; initial?: string; onSubmit: (n: number) => void; onClose: () => void }) {
+/** Cross-platform number/text entry (Alert.prompt only exists on iOS). */
+export function NumberPrompt(props: {
+  title: string;
+  message?: string;
+  initial?: string;
+  onSubmit?: (n: number) => void;
+  /** Text mode: gift card codes, check numbers. */
+  onSubmitText?: (s: string) => void;
+  onClose: () => void;
+}) {
   const { dialog } = useLayout();
   const [text, setText] = useState(props.initial ?? "");
+  const textMode = !!props.onSubmitText;
   const n = Number(text);
-  const valid = text.trim() !== "" && Number.isFinite(n) && n >= 0;
+  const valid = textMode ? text.trim() !== "" : text.trim() !== "" && Number.isFinite(n) && n >= 0;
   const submit = () => {
     if (!valid) return;
-    props.onSubmit(n);
+    if (textMode) props.onSubmitText!(text.trim());
+    else props.onSubmit?.(n);
     props.onClose();
   };
   return (
@@ -25,7 +35,9 @@ export function NumberPrompt(props: { title: string; message?: string; initial?:
             style={ui.input}
             value={text}
             onChangeText={setText}
-            keyboardType="decimal-pad"
+            keyboardType={textMode ? "default" : "decimal-pad"}
+            autoCapitalize="characters"
+            autoCorrect={false}
             autoFocus
             selectTextOnFocus
             onSubmitEditing={submit}

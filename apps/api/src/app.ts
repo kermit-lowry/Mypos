@@ -7,6 +7,7 @@ import { AppError } from "./errors.js";
 import type { PaymentGateway } from "./payments/gateway.js";
 import { adminRoutes } from "./routes/admin.js";
 import { catalogRoutes } from "./routes/catalog.js";
+import { dealRoutes } from "./routes/deals.js";
 import { loyaltyRoutes } from "./routes/loyalty.js";
 import { pricingRoutes } from "./routes/pricing.js";
 import { salesRoutes } from "./routes/sales.js";
@@ -17,7 +18,9 @@ import { tradeRoutes } from "./routes/trade.js";
 
 export async function buildApp(deps: { prisma: PrismaClient; gateway: PaymentGateway; logger?: boolean }) {
   const app = Fastify({ logger: deps.logger ?? false });
-  await app.register(cors, { origin: true });
+  // Browsers (web store, web preview/back office) need the write methods
+  // allowed explicitly; @fastify/cors only allows GET, HEAD, and POST by default.
+  await app.register(cors, { origin: true, methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] });
   await app.register(jwt, { secret: config.jwtSecret });
 
   app.setErrorHandler((err, _req, reply) => {
@@ -42,6 +45,7 @@ export async function buildApp(deps: { prisma: PrismaClient; gateway: PaymentGat
   loyaltyRoutes(app, ctx);
   terminalRoutes(app, ctx);
   pricingRoutes(app, ctx);
+  dealRoutes(app, ctx);
   storefrontRoutes(app, ctx, {
     // Web orders ship from the first location until per-location fulfillment is configured.
     fulfillmentLocationId: async () => (await deps.prisma.location.findFirstOrThrow({ orderBy: { createdAt: "asc" } })).id,

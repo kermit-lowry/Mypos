@@ -24,6 +24,10 @@ export interface Receipt {
     cardAdjustmentCents: number;
   };
   payments: { label: string; amountCents: number; detail?: string }[];
+  /** Automated deals, at the prices shown on this receipt. */
+  promotions: { name: string; discountCents: number }[];
+  /** Deals + manual discounts + rewards. */
+  savedCents: number;
   changeCents: number;
   loyalty: string | null;
 }
@@ -31,6 +35,7 @@ export interface Receipt {
 const TENDER_LABELS: Record<string, string> = {
   CARD: "Card",
   CASH: "Cash",
+  CHECK: "Check",
   STORE_CREDIT: "Store credit",
   LOYALTY: "Rewards",
   GIFT_CARD: "Gift card",
@@ -47,9 +52,9 @@ export async function buildReceipt(prisma: PrismaClient, orderId: string): Promi
 
   const bps = order.cardPriceBps;
   const sale = order.payments.filter((p) => p.amountCents > 0 && p.status === "APPROVED");
-  const cardPaid = sale.filter((p) => p.tender === "CARD").reduce((a, p) => a + p.amountCents, 0);
   const charged = order.totalCents + order.cardAdjustmentCents;
-  const allCard = bps > 0 && cardPaid > 0 && cardPaid === charged;
+  // Everything was paid at the card price (by card, or tenders the store prices like cards).
+  const allCard = bps > 0 && order.cardAdjustmentCents > 0 && charged === order.cardTotalCents;
 
   // Paid entirely by card: show card prices on every line so they add up to
   // what was charged. Otherwise show cash prices plus any card adjustment.
@@ -89,8 +94,13 @@ export async function buildReceipt(prisma: PrismaClient, orderId: string): Promi
     payments: sale.map((p) => ({
       label: TENDER_LABELS[p.tender] ?? p.tender,
       amountCents: p.amountCents + (p.changeCents ?? 0),
-      detail: p.cardLast4 ? `${p.cardBrand ?? "Card"} •••• ${p.cardLast4}` : undefined,
+      detail: p.cardLast4 ? `${p.cardBrand ?? "Card"} •••• ${p.cardLast4}` : p.tender === "CHECK" && p.gatewayRef ? `#${p.gatewayRef}` : undefined,
     })),
+    promotions: ((order.appliedPromotions as { name: string; discountCents: number }[] | null) ?? []).map((a) => ({
+      name: a.name,
+      discountCents: allCard ? cardPrice(a.discountCents, bps) : a.discountCents,
+    })),
+    savedCents: shown.discountCents,
     changeCents: change,
     loyalty: order.loyaltyEarned > 0 ? (order.loyaltyUnit === "POINTS" ? `You earned ${order.loyaltyEarned} points` : `You earned ${formatCents(order.loyaltyEarned)} in rewards`) : null,
   };
@@ -122,6 +132,7 @@ export function receiptText(r: Receipt, width = 42): string {
   out.push(rule);
   out.push(pad("Subtotal", formatCents(r.subtotalCents), width));
   if (r.discountCents) out.push(pad("Discounts", `-${formatCents(r.discountCents)}`, width));
+  for (const p of r.promotions) out.push(pad(`  ${p.name}`, `-${formatCents(p.discountCents)}`, width));
   out.push(pad("Tax", formatCents(r.taxCents), width));
   if (r.dualPricing?.cardAdjustmentCents) out.push(pad(`Card price adj. (${r.dualPricing.percent})`, formatCents(r.dualPricing.cardAdjustmentCents), width));
   out.push(pad(r.pricedAt === "CARD" ? "TOTAL (card price)" : "TOTAL", formatCents(r.totalCents + (r.dualPricing?.cardAdjustmentCents ?? 0)), width));
@@ -137,6 +148,7 @@ export function receiptText(r: Receipt, width = 42): string {
     if (p.detail) out.push(`   ${p.detail}`);
   }
   if (r.changeCents) out.push(pad("Change", formatCents(r.changeCents), width));
+  if (r.savedCents) out.push("", center(`You saved ${formatCents(r.savedCents)} today!`));
   if (r.loyalty) out.push("", center(r.loyalty));
   if (r.store.footer) {
     out.push("");
@@ -169,6 +181,7 @@ ${r.cashier || r.customer ? `<p class="c">${esc([r.cashier && `Cashier: ${r.cash
     )
     .join("")}
 ${row("Subtotal", formatCents(r.subtotalCents), "t")}${r.discountCents ? row("Discounts", `−${formatCents(r.discountCents)}`) : ""}
+${r.promotions.map((p) => row(p.name, `−${formatCents(p.discountCents)}`, "m")).join("")}
 ${row("Tax", formatCents(r.taxCents))}${r.dualPricing?.cardAdjustmentCents ? row(`Card price adjustment (${r.dualPricing.percent})`, formatCents(r.dualPricing.cardAdjustmentCents)) : ""}
 ${row(r.pricedAt === "CARD" ? "Total (card price)" : "Total", formatCents(total), "b")}</table>
 ${
@@ -179,7 +192,7 @@ ${
 }
 <table>${r.payments.map((p) => row(p.label + (p.detail ? ` (${p.detail})` : ""), formatCents(p.amountCents))).join("")}
 ${r.changeCents ? row("Change", formatCents(r.changeCents)) : ""}</table>
-${r.loyalty ? `<p class="c">${esc(r.loyalty)}</p>` : ""}${r.store.footer ? `<p class="c">${esc(r.store.footer)}</p>` : ""}
+${r.savedCents ? `<p class="c"><b>You saved ${formatCents(r.savedCents)} today!</b></p>` : ""}${r.loyalty ? `<p class="c">${esc(r.loyalty)}</p>` : ""}${r.store.footer ? `<p class="c">${esc(r.store.footer)}</p>` : ""}
 </body></html>`;
 }
 
@@ -197,6 +210,7 @@ export function receiptTerminalHtml(r: Receipt): string {
     sep,
     pair("Subtotal", formatCents(r.subtotalCents)),
     ...(r.discountCents ? [pair("Discounts", `-${formatCents(r.discountCents)}`)] : []),
+    ...r.promotions.map((p) => pair(`  ${p.name.slice(0, 24)}`, `-${formatCents(p.discountCents)}`)),
     pair("Tax", formatCents(r.taxCents)),
     ...(r.dualPricing?.cardAdjustmentCents ? [pair(`Card adj. (${r.dualPricing.percent})`, formatCents(r.dualPricing.cardAdjustmentCents))] : []),
     text(`${r.pricedAt === "CARD" ? "CARD TOTAL" : "TOTAL"} ${formatCents(total)}`, "large bold right"),
@@ -215,6 +229,6 @@ export function receiptTerminalHtml(r: Receipt): string {
   return `<html style="font-family: monospace"><body>
 <header>${text(r.store.name, "large bold center")}${r.store.header ? text(r.store.header, "center") : ""}${text(`Sale #${r.orderNumber}`, "center")}${text(r.createdAt.toLocaleString("en-US"), "small center")}</header>
 <main>${main.join("")}</main>
-<footer>${r.loyalty ? text(r.loyalty, "center") : ""}${r.store.footer ? text(r.store.footer, "center") : ""}</footer>
+<footer>${r.savedCents ? text(`You saved ${formatCents(r.savedCents)} today!`, "bold center") : ""}${r.loyalty ? text(r.loyalty, "center") : ""}${r.store.footer ? text(r.store.footer, "center") : ""}</footer>
 </body></html>`;
 }

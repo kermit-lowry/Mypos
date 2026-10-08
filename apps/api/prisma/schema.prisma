@@ -18,6 +18,9 @@ model Location {
   timezone   String   @default("America/New_York")
   /// Dual pricing: card price = cash price + this many bps (399 = 3.99%). 0 = off.
   cardPriceBps Int    @default(0)
+  /// Tenders besides CARD that pay the card price (GIFT_CARD, STORE_CREDIT,
+  /// CHECK, LOYALTY). Empty = they all pay the cash price.
+  cardPricedTenders String[] @default([])
   /// Zebra (ZPL) label printer on the store network, "host" or "host:port".
   labelPrinterHost String?
   /// Shown on receipts.
@@ -156,11 +159,15 @@ model Product {
   // Sneaker / apparel metadata
   styleCode String?
 
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id])
+
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   variants  Variant[]
 
   @@index([kind])
+  @@index([categoryId])
   @@index([game, setCode])
   @@index([title])
 }
@@ -329,6 +336,8 @@ model Order {
   /// Spend that earned, used to claw back proportionally on refunds.
   loyaltyEligibleCents Int     @default(0)
   pointsRedeemed  Int          @default(0)
+  /// Deals applied: [{ promotionId, name, discountCents }].
+  appliedPromotions Json       @default("[]")
   createdAt      DateTime     @default(now())
 
   lines    OrderLine[]
@@ -351,6 +360,8 @@ model OrderLine {
   discountCents  Int     @default(0)
   /// Portion of discountCents that came from loyalty rewards.
   rewardDiscountCents Int @default(0)
+  /// Portion of discountCents that came from automated deals.
+  promoDiscountCents  Int @default(0)
   /// Whether this line counted toward loyalty earning.
   earnsLoyalty   Boolean @default(false)
   taxable        Boolean
@@ -679,5 +690,83 @@ model LoyaltyEntry {
 model CustomerDisplay {
   channel   String   @id
   payload   Json
+  updatedAt DateTime @updatedAt
+}
+
+// ─── Categories & automated deals ────────────────────────────────
+
+/// Category tree, e.g. Pokémon > Sealed > Booster Boxes. Deals on a category
+/// cover everything beneath it.
+model Category {
+  id        String     @id @default(cuid())
+  name      String
+  parentId  String?
+  parent    Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children  Category[] @relation("CategoryTree")
+  products  Product[]
+  createdAt DateTime   @default(now())
+
+  @@unique([parentId, name])
+}
+
+enum PromotionType {
+  PERCENT_OFF
+  AMOUNT_OFF
+  SALE_PRICE
+  BUY_X_GET_Y
+  MULTI_BUY
+  ORDER_DISCOUNT
+}
+
+/// Automated discount rule. See packages/shared/src/promotions.ts for semantics.
+model Promotion {
+  id          String        @id @default(cuid())
+  name        String
+  description String?
+  active      Boolean       @default(true)
+  type        PromotionType
+  priority    Int           @default(100)
+  stackable   Boolean       @default(false)
+
+  // What it applies to
+  targetAll          Boolean  @default(false)
+  productIds         String[] @default([])
+  variantIds         String[] @default([])
+  categoryIds        String[] @default([])
+  excludeProductIds  String[] @default([])
+  excludeCategoryIds String[] @default([])
+  /// BUY_X_GET_Y "get" items; all empty = same as the targets above.
+  getProductIds      String[] @default([])
+  getVariantIds      String[] @default([])
+  getCategoryIds     String[] @default([])
+
+  // Amounts
+  percentBps       Int?
+  amountCents      Int?
+  priceCents       Int?
+  buyQty           Int?
+  getQty           Int?
+  getDiscountBps   Int?
+  minQty           Int?
+  minSubtotalCents Int?
+  maxApplications  Int?
+
+  // When
+  startsAt   DateTime?
+  endsAt     DateTime?
+  /// Local calendar dates "YYYY-MM-DD".
+  dates      String[]  @default([])
+  /// 0 = Sunday.
+  daysOfWeek Int[]     @default([])
+  /// Local "HH:MM".
+  startTime  String?
+  endTime    String?
+
+  // Where
+  channels    SalesChannel[] @default([POS, STOREFRONT])
+  /// Empty = every location.
+  locationIds String[]       @default([])
+
+  createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }

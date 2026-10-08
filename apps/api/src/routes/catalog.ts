@@ -62,6 +62,15 @@ export function catalogRoutes(app: FastifyInstance, base: Ctx) {
     return p;
   });
 
+  app.patch("/catalog/products/:id", manager, async (req) => {
+    const { id } = req.params as { id: string };
+    const data = parse(
+      z.object({ title: z.string().min(1).optional(), categoryId: z.string().nullable().optional(), channels: z.array(z.enum(["POS", "STOREFRONT", "SHOPIFY", "TCGPLAYER", "EBAY"])).optional() }),
+      req.body,
+    );
+    return prisma.product.update({ where: { id }, data });
+  });
+
   app.patch("/catalog/variants/:id", manager, async (req) => {
     const { id } = req.params as { id: string };
     const data = parse(

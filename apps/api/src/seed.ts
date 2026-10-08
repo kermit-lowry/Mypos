@@ -1,6 +1,7 @@
 /** Demo data: one store, three staff (PIN 1234), and a few TCG + sneaker products. */
 import bcrypt from "bcryptjs";
 import { prisma } from "./db.js";
+import { seedCategoriesAndDeals } from "./seedDeals.js";
 
 const pinHash = await bcrypt.hash("1234", 10);
 const location = await prisma.location.create({ data: { name: "Main Street", taxRateBps: 825 } });
@@ -72,6 +73,8 @@ for (const { variants, ...p } of products) {
     await prisma.inventoryMovement.create({ data: { variantId: v.id, locationId: location.id, delta: 4, reason: "RECEIVE", note: "Seed" } });
   }
 }
+
+await seedCategoriesAndDeals();
 
 console.log(`Seeded location ${location.id}. Staff: owner@/manager@/cashier@mypos.local, PIN 1234`);
 await prisma.$disconnect();

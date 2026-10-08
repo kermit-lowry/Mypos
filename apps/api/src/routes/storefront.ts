@@ -5,6 +5,7 @@ import { availableFor } from "../channels/sync.js";
 import { notFound } from "../errors.js";
 import { parse } from "../http.js";
 import { checkout } from "../services/checkout.js";
+import { quoteCart } from "../services/quote.js";
 import type { Ctx } from "../services/context.js";
 
 /**
@@ -77,6 +78,18 @@ export function storefrontRoutes(app: FastifyInstance, base: Ctx, opts: { fulfil
         })),
       ),
     };
+  });
+
+  /** Cart totals with online deals applied. Online orders pay the card price. */
+  app.post("/storefront/quote", async (req) => {
+    const { lines } = parse(z.object({ lines: z.array(CartLine.omit({ unitPriceCents: true, discountCents: true })).min(1) }), req.body);
+    const q = await quoteCart(prisma, {
+      locationId: await opts.fulfillmentLocationId(),
+      channel: "STOREFRONT",
+      lines: lines.map((l) => ({ ...l, discountCents: 0 })),
+      rewardIds: [],
+    });
+    return { subtotalCents: q.card.subtotalCents, discountCents: q.card.discountCents, taxCents: q.card.taxCents, totalCents: q.card.totalCents, promotions: q.promotions };
   });
 
   app.post("/storefront/checkout", async (req, reply) => {

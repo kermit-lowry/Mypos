@@ -64,31 +64,37 @@ export function SellScreen() {
   const channel = displayChannel(location.id, terminalState.terminal?.id);
   const [payState, setPayState] = useState<PayState>(null);
 
-  // With a customer attached, the server prices rewards and previews what the sale earns.
+  // The server prices every cart: automated deals (which depend on the day and
+  // time), rewards, and both prices. Charge waits for a quote of this exact cart.
   const loyaltyOn = !!program?.enabled && !!customer;
+  const cartLines = lines.map((l) => ({ variantId: l.variant.id, quantity: l.quantity, discountCents: l.discountCents }));
+  const signature = JSON.stringify([cartLines, rewardIds, customer?.id ?? null]);
+  const [quoteSig, setQuoteSig] = useState<string | null>(null);
   useEffect(() => {
-    if (!loyaltyOn || lines.length === 0) {
+    if (lines.length === 0) {
       setQuote(null);
       setQuoteError(null);
+      setQuoteSig(null);
       return;
     }
     let live = true;
-    api<LoyaltyQuote>("POST", "/loyalty/quote", {
-      locationId: location.id,
-      customerId: customer!.id,
-      lines: lines.map((l) => ({ variantId: l.variant.id, quantity: l.quantity, discountCents: l.discountCents })),
-      rewardIds,
-    })
-      .then((q) => live && (setQuote(q), setQuoteError(null)))
-      .catch((e) => live && (setQuote(null), setQuoteError(e instanceof ApiError ? e.message : String(e))));
+    const t = setTimeout(() => {
+      api<LoyaltyQuote>("POST", "/cart/quote", { locationId: location.id, customerId: customer?.id, lines: cartLines, rewardIds })
+        .then((q) => live && (setQuote(q), setQuoteError(null), setQuoteSig(signature)))
+        .catch((e) => live && (setQuote(null), setQuoteSig(null), setQuoteError(e instanceof ApiError ? e.message : String(e))));
+    }, 150);
     return () => {
       live = false;
+      clearTimeout(t);
     };
-  }, [loyaltyOn, lines, rewardIds, customer, location.id]);
+  }, [signature, location.id]);
 
-  const dual: DualTotals = useMemo(() => (quote ? { cash: quote, card: quote.card } : localTotals), [quote, localTotals]);
+  const fresh = quote && quoteSig === signature ? quote : null;
+  const dual: DualTotals = useMemo(() => (fresh ? { cash: fresh, card: fresh.card } : localTotals), [fresh, localTotals]);
   const totals = dual.cash;
-  const quoteReady = rewardIds.length === 0 || (!!quote && !quoteError);
+  const quoteReady = !!fresh && !quoteError;
+  /** Discount on a cart line, including deals, once priced by the server. */
+  const lineDiscount = (i: number) => fresh?.lines[i]?.discountCents ?? lines[i]!.discountCents;
 
   function add(product: Product, variant: Variant) {
     setLines((prev) => {
@@ -141,13 +147,14 @@ export function SellScreen() {
       state: tendering ? "PAYING" : "CART",
       storeName: location.name,
       cardPercent: bps > 0 ? formatBps(bps) : null,
-      lines: lines.map((l) => ({
+      lines: lines.map((l, i) => ({
         title: l.product.title,
         detail: variantLabel(l.variant),
         quantity: l.quantity,
-        cashCents: l.variant.priceCents * l.quantity - l.discountCents,
-        cardCents: cardPrice(l.variant.priceCents, bps) * l.quantity - (l.discountCents ? cardPrice(l.discountCents, bps) : 0),
+        cashCents: l.variant.priceCents * l.quantity - lineDiscount(i),
+        cardCents: cardPrice(l.variant.priceCents, bps) * l.quantity - (lineDiscount(i) ? cardPrice(lineDiscount(i), bps) : 0),
       })),
+      promotions: fresh?.promotions.map((p) => ({ name: p.name, discountCents: p.discountCents })) ?? [],
       cash: dual.cash,
       card: dual.card,
       due: tendering && payState?.due ? payState.due : undefined,
@@ -159,7 +166,7 @@ export function SellScreen() {
             : `${formatCents(quote.earn.amount)} rewards`
           : null,
     });
-  }, [channel, lines, dual, tendering, payState, customer, quote, bps, location.name]);
+  }, [channel, lines, dual, tendering, payState, customer, fresh, bps, location.name]);
 
   const cartCount = lines.reduce((a, l) => a + l.quantity, 0);
   return (
@@ -190,18 +197,21 @@ export function SellScreen() {
               data={lines}
               keyExtractor={(l) => l.variant.id}
               ListEmptyComponent={<Text style={[ui.muted, { textAlign: "center", marginTop: 40 }]}>Scan or search to add items</Text>}
-              renderItem={({ item: l }) => (
+              renderItem={({ item: l, index }) => (
                 <View style={{ paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}>
                   <View style={[ui.row, { justifyContent: "space-between" }]}>
                     <Text style={[ui.text, { flex: 1 }]} numberOfLines={1}>
                       {l.product.title}
                     </Text>
-                    <Text style={ui.text}>{formatCents(l.variant.priceCents * l.quantity - l.discountCents)}</Text>
+                    <Text style={ui.text}>{formatCents(l.variant.priceCents * l.quantity - lineDiscount(index))}</Text>
                   </View>
                   {bps > 0 && (
                     <Text style={[ui.muted, { textAlign: "right" }]}>
-                      Card {formatCents(cardPrice(l.variant.priceCents, bps) * l.quantity - (l.discountCents ? cardPrice(l.discountCents, bps) : 0))}
+                      Card {formatCents(cardPrice(l.variant.priceCents, bps) * l.quantity - (lineDiscount(index) ? cardPrice(lineDiscount(index), bps) : 0))}
                     </Text>
+                  )}
+                  {!!fresh?.lines[index]?.promoDiscountCents && (
+                    <Text style={[ui.muted, { color: colors.good, textAlign: "right" }]}>Deal −{formatCents(fresh.lines[index]!.promoDiscountCents)}</Text>
                   )}
                   <Text style={ui.muted}>{variantLabel(l.variant)}</Text>
                   <View style={[ui.row, { gap: 8, marginTop: 6 }]}>
@@ -229,6 +239,12 @@ export function SellScreen() {
             <View style={{ gap: 4 }}>
               <Row label="Subtotal" value={totals.subtotalCents} />
               {totals.discountCents > 0 && <Row label={rewardIds.length ? "Discounts & rewards" : "Discounts"} value={-totals.discountCents} />}
+          {fresh?.promotions.map((p) => (
+            <View key={p.promotionId} style={[ui.row, { justifyContent: "space-between" }]}>
+              <Text style={[ui.muted, { color: colors.good }]}>  {p.name}</Text>
+              <Text style={[ui.muted, { color: colors.good }]}>−{formatCents(p.discountCents)}</Text>
+            </View>
+          ))}
               <Row label={`Tax (${(location.taxRateBps / 100).toFixed(2)}%)`} value={totals.taxCents} />
               {bps > 0 ? (
                 <>
@@ -281,6 +297,7 @@ export function SellScreen() {
         <TenderSheet
           dual={dual}
           bps={bps}
+          cardPricedTenders={location.cardPricedTenders ?? []}
           terminalState={terminalState}
           onState={setPayState}
           customer={customer}
@@ -316,6 +333,7 @@ type PayState = null | { due?: { cashCents: number; cardCents: number }; done?: 
 function TenderSheet(props: {
   dual: DualTotals;
   bps: number;
+  cardPricedTenders: string[];
   terminalState: ReturnType<typeof useTerminal>;
   onState: (s: PayState) => void;
   customer: Customer | null;
@@ -342,13 +360,19 @@ function TenderSheet(props: {
 
   // Dual pricing: cash-priced tenders pay down the cash total; a card covers
   // whatever is left at the card price.
-  const cashPricedPaid = tenders.filter((t) => !isCardPriced(t.type)).reduce((a, t) => a + t.amountCents, 0);
-  const cardPaid = tenders.filter((t) => isCardPriced(t.type)).reduce((a, t) => a + t.amountCents, 0);
-  const hasCard = tenders.some((t) => isCardPriced(t.type));
+  // Which tenders pay the card price is a store setting (cards always do).
+  const priced = (type: TenderInput["type"]) => isCardPriced(type, props.cardPricedTenders);
+  const cashPricedPaid = tenders.filter((t) => !priced(t.type)).reduce((a, t) => a + t.amountCents, 0);
+  const cardPaid = tenders.filter((t) => priced(t.type)).reduce((a, t) => a + t.amountCents, 0);
+  // Once something pays at the card price, the rest must too (cash-priced tenders go first).
+  const hasCard = tenders.some((t) => priced(t.type));
   const cashDue = hasCard ? 0 : Math.max(0, props.dual.cash.totalCents - cashPricedPaid);
   const cardDue = cardAmountDue(props.dual, cashPricedPaid);
+  const cardRemaining = Math.max(0, cardDue - cardPaid);
+  const dueFor = (type: TenderInput["type"]) => (priced(type) ? cardRemaining : cashDue);
   const due = cashDue;
   const ready = hasCard ? cardPaid === cardDue : cashDue === 0;
+  const [prompt, setPrompt] = useState<null | "CHECK" | "GIFT_CARD">(null);
 
   useEffect(() => {
     if (!receipt) props.onState({ due: { cashCents: cashDue, cardCents: hasCard ? 0 : cardDue } });
@@ -365,18 +389,33 @@ function TenderSheet(props: {
   };
   const addCard = () => {
     if (due <= 0) return;
-    if (terminal) return setTenders((t) => [...t, { type: "CARD", amountCents: cardDue, terminalId: terminal.id }]);
+    if (terminal) return setTenders((t) => [...t, { type: "CARD", amountCents: cardRemaining, terminalId: terminal.id }]);
     // Development without a terminal: the API's mock processor approves this token.
-    if (__DEV__ && terminals?.length === 0) return setTenders((t) => [...t, { type: "CARD", amountCents: cardDue, paymentToken: "tok_ok" }]);
+    if (__DEV__ && terminals?.length === 0) return setTenders((t) => [...t, { type: "CARD", amountCents: cardRemaining, paymentToken: "tok_ok" }]);
     setPickingTerminal(true);
   };
   const addCredit = () => {
-    const amt = Math.min(due, credit - creditUsed);
+    const amt = Math.min(dueFor("STORE_CREDIT"), credit - creditUsed);
     if (amt > 0) setTenders((t) => [...t, { type: "STORE_CREDIT", amountCents: amt }]);
   };
 
+  const addCheck = (reference: string) => {
+    const amt = dueFor("CHECK");
+    if (amt > 0) setTenders((t) => [...t, { type: "CHECK", amountCents: amt, reference }]);
+  };
+  const addGiftCard = async (code: string) => {
+    try {
+      const g = await api<{ code: string; balanceCents: number }>("GET", `/gift-cards/${encodeURIComponent(code)}`);
+      const used = tenders.filter((t) => t.giftCardCode === g.code).reduce((a, t) => a + t.amountCents, 0);
+      const amt = Math.min(dueFor("GIFT_CARD"), g.balanceCents - used);
+      if (amt <= 0) return setError(`Gift card ${g.code} has no balance left`);
+      setTenders((t) => [...t, { type: "GIFT_CARD", amountCents: amt, giftCardCode: g.code }]);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    }
+  };
   const addRewards = () => {
-    const amt = Math.min(due, rewards - rewardsUsed);
+    const amt = Math.min(dueFor("LOYALTY"), rewards - rewardsUsed);
     if (amt > 0) setTenders((t) => [...t, { type: "LOYALTY", amountCents: amt }]);
   };
 
@@ -475,6 +514,8 @@ function TenderSheet(props: {
                 <View key={i} style={[ui.row, { justifyContent: "space-between" }]}>
                   <Text style={ui.text}>
                     {t.type === "LOYALTY" ? "REWARDS" : t.type.replace("_", " ")}
+                    {t.type === "CHECK" && t.reference ? ` #${t.reference}` : ""}
+                    {t.type === "GIFT_CARD" && t.giftCardCode ? ` ${t.giftCardCode}` : ""}
                     {t.tenderedCents && t.tenderedCents > t.amountCents ? ` (handed ${formatCents(t.tenderedCents)})` : ""}
                   </Text>
                   <Pressable onPress={() => setTenders((ts) => ts.filter((_, j) => j !== i))}>
@@ -482,35 +523,42 @@ function TenderSheet(props: {
                   </Pressable>
                 </View>
               ))}
-              {due > 0 && (
+              {!ready && (
                 <>
-                  <Text style={ui.muted}>Cash</Text>
+                  {!hasCard && (
+                    <>
+                      <Text style={ui.muted}>Cash</Text>
+                      <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
+                        <Button title="Exact" kind="secondary" onPress={() => addCash(due)} />
+                        {[2000, 5000, 10000]
+                          .filter((d) => d >= due)
+                          .map((d) => (
+                            <Button key={d} title={formatCents(d)} kind="secondary" onPress={() => addCash(d)} />
+                          ))}
+                        <TextInput
+                          style={[ui.input, { width: 120 }]}
+                          placeholder="Other"
+                          placeholderTextColor={colors.muted}
+                          keyboardType="decimal-pad"
+                          value={cashInput}
+                          onChangeText={setCashInput}
+                          onSubmitEditing={() => addCash(Math.round(Number(cashInput) * 100))}
+                        />
+                      </View>
+                    </>
+                  )}
                   <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
-                    <Button title="Exact" kind="secondary" onPress={() => addCash(due)} />
-                    {[2000, 5000, 10000]
-                      .filter((d) => d >= due)
-                      .map((d) => (
-                        <Button key={d} title={formatCents(d)} kind="secondary" onPress={() => addCash(d)} />
-                      ))}
-                    <TextInput
-                      style={[ui.input, { width: 120 }]}
-                      placeholder="Other"
-                      placeholderTextColor={colors.muted}
-                      keyboardType="decimal-pad"
-                      value={cashInput}
-                      onChangeText={setCashInput}
-                      onSubmitEditing={() => addCash(Math.round(Number(cashInput) * 100))}
-                    />
-                  </View>
-                  <View style={[ui.row, { gap: 8 }]}>
-                    <Button title={`Card ${formatCents(cardDue)}`} onPress={addCard} style={{ flex: 1 }} />
-                    {credit - creditUsed > 0 && (
-                      <Button title={`Store credit (${formatCents(credit - creditUsed)})`} kind="secondary" onPress={addCredit} style={{ flex: 1 }} />
+                    <Button title={`Card ${formatCents(cardRemaining)}`} onPress={addCard} style={{ flexGrow: 1 }} />
+                    {dueFor("CHECK") > 0 && <Button title="Check" kind="secondary" onPress={() => setPrompt("CHECK")} style={{ flexGrow: 1 }} />}
+                    {dueFor("GIFT_CARD") > 0 && <Button title="Gift card" kind="secondary" onPress={() => setPrompt("GIFT_CARD")} style={{ flexGrow: 1 }} />}
+                    {credit - creditUsed > 0 && dueFor("STORE_CREDIT") > 0 && (
+                      <Button title={`Store credit (${formatCents(credit - creditUsed)})`} kind="secondary" onPress={addCredit} style={{ flexGrow: 1 }} />
                     )}
-                    {rewards - rewardsUsed > 0 && (
-                      <Button title={`Rewards (${formatCents(rewards - rewardsUsed)})`} kind="secondary" onPress={addRewards} style={{ flex: 1 }} />
+                    {rewards - rewardsUsed > 0 && dueFor("LOYALTY") > 0 && (
+                      <Button title={`Rewards (${formatCents(rewards - rewardsUsed)})`} kind="secondary" onPress={addRewards} style={{ flexGrow: 1 }} />
                     )}
                   </View>
+                  {hasCard && props.bps > 0 && <Text style={ui.muted}>The rest is at the card price. Remove card-priced payments to take cash.</Text>}
                 </>
               )}
               {waitingOnCard && (
@@ -530,6 +578,14 @@ function TenderSheet(props: {
           )}
         </ScrollView>
       </View>
+      {prompt && (
+        <NumberPrompt
+          title={prompt === "CHECK" ? "Check number" : "Gift card"}
+          message={prompt === "CHECK" ? `Check for ${formatCents(dueFor("CHECK"))}` : "Scan or type the gift card code"}
+          onSubmitText={(v) => (prompt === "CHECK" ? addCheck(v) : addGiftCard(v))}
+          onClose={() => setPrompt(null)}
+        />
+      )}
       {pickingTerminal && terminals && (
         <TerminalPicker terminals={terminals} selectedId={terminal?.id} onSelect={select} onClose={() => setPickingTerminal(false)} />
       )}

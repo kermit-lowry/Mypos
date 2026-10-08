@@ -8,10 +8,18 @@ import { roundHalfUp } from "./money.js";
  * shown to the customer on the display, the receipt, and the shelf label.
  */
 
-/** Tenders charged at the card price. Everything else pays the cash price. */
-export const CARD_PRICED_TENDERS: readonly TenderType[] = ["CARD"];
+/**
+ * Cards always pay the card price and cash always pays the cash price. These
+ * tenders pay the cash price unless the merchant opts them into card pricing.
+ */
+export const CONFIGURABLE_PRICED_TENDERS = ["GIFT_CARD", "STORE_CREDIT", "CHECK", "LOYALTY"] as const satisfies readonly TenderType[];
+export type ConfigurablePricedTender = (typeof CONFIGURABLE_PRICED_TENDERS)[number];
 
-export const isCardPriced = (t: TenderType) => CARD_PRICED_TENDERS.includes(t);
+/** Whether a tender pays the card price, given the location's opted-in tenders. */
+export function isCardPriced(t: TenderType, cardPricedTenders: readonly string[] = []): boolean {
+  if (t === "CARD") return true;
+  return (CONFIGURABLE_PRICED_TENDERS as readonly string[]).includes(t) && cardPricedTenders.includes(t);
+}
 
 /** Card price for a cash amount. `bps` = 399 means card is 3.99% more. */
 export function cardPrice(cashCents: number, bps: number): number {

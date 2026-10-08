@@ -112,7 +112,12 @@ export function CustomerDisplayScreen({ onExit }: { onExit: () => void }) {
         )}
         <View style={[ui.panel, { gap: 6 }]}>
           <Pair label="Subtotal" cash={d.cash.subtotalCents} card={d.card.subtotalCents} dual={dual} />
-          {d.cash.discountCents > 0 && <Pair label="Discounts" cash={-d.cash.discountCents} card={-d.card.discountCents} dual={dual} />}
+          {d.cash.discountCents > 0 && <Pair label="You save" cash={-d.cash.discountCents} card={-d.card.discountCents} dual={dual} />}
+          {d.promotions?.map((p, i) => (
+            <Text key={i} style={[ui.text, { color: colors.good, fontSize: 16 }]}>
+              ✓ {p.name}
+            </Text>
+          ))}
           <Pair label="Tax" cash={d.cash.taxCents} card={d.card.taxCents} dual={dual} />
         </View>
         {dual ? (

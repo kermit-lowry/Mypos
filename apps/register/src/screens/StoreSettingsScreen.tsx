@@ -15,6 +15,7 @@ export function StoreSettingsScreen({ onSaved }: { onSaved: (l: Location) => voi
   const [header, setHeader] = useState(location.receiptHeader ?? "");
   const [footer, setFooter] = useState(location.receiptFooter ?? "");
   const [message, setMessage] = useState<string | null>(null);
+  const [cardPriced, setCardPriced] = useState<string[]>(location.cardPricedTenders ?? []);
 
   const bps = dual ? Math.round(Number(percent) * 100) : 0;
   const valid = !dual || (Number.isFinite(bps) && bps > 0 && bps <= 1000);
@@ -23,6 +24,7 @@ export function StoreSettingsScreen({ onSaved }: { onSaved: (l: Location) => voi
     try {
       const updated = await api<Location>("PATCH", `/locations/${location.id}`, {
         cardPriceBps: bps,
+        cardPricedTenders: cardPriced,
         labelPrinterHost: printer.trim() || null,
         receiptHeader: header.trim() || null,
         receiptFooter: footer.trim() || null,
@@ -42,8 +44,8 @@ export function StoreSettingsScreen({ onSaved }: { onSaved: (l: Location) => voi
           <Switch value={dual} onValueChange={setDual} />
         </View>
         <Text style={ui.muted}>
-          Show a cash price and a card price on the customer display, receipts, and shelf labels. Card payments pay the card price; cash, store credit,
-          gift cards, and rewards pay the cash price.
+          Show a cash price and a card price on the customer display, receipts, and shelf labels. Cards always pay the card price and cash always pays
+          the cash price. Choose below for everything else.
         </Text>
         {dual && (
           <>
@@ -59,6 +61,24 @@ export function StoreSettingsScreen({ onSaved }: { onSaved: (l: Location) => voi
             ) : (
               <Text style={ui.error}>Enter a percentage between 0.01 and 10.</Text>
             )}
+            <Text style={[ui.text, { marginTop: 8 }]}>These pay the card price:</Text>
+            {(
+              [
+                ["GIFT_CARD", "Gift cards"],
+                ["STORE_CREDIT", "Store credit"],
+                ["CHECK", "Checks"],
+                ["LOYALTY", "Rewards dollars"],
+              ] as const
+            ).map(([tender, label]) => (
+              <View key={tender} style={[ui.row, { justifyContent: "space-between" }]}>
+                <Text style={ui.text}>{label}</Text>
+                <Switch
+                  value={cardPriced.includes(tender)}
+                  onValueChange={(on) => setCardPriced((x) => (on ? [...x, tender] : x.filter((t) => t !== tender)))}
+                />
+              </View>
+            ))}
+            <Text style={ui.muted}>Off means that tender pays the cash price.</Text>
             <Text style={ui.muted}>Check your state's rules and your card processing agreement before turning this on.</Text>
           </>
         )}

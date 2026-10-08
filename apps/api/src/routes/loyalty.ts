@@ -1,10 +1,11 @@
-import { CartLine, LoyaltyProgramInput, RewardInput, dualTotals, earnFor } from "@mypos/shared";
+import { CartLine, LoyaltyProgramInput, RewardInput } from "@mypos/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { badRequest, notFound } from "../errors.js";
 import { parse, requireRole } from "../http.js";
 import type { Ctx } from "../services/context.js";
-import { earns, getProgram, loyaltyBalances, postLoyalty, priceRewards, unitFor } from "../services/loyalty.js";
+import { getProgram, loyaltyBalances, postLoyalty } from "../services/loyalty.js";
+import { quoteCart } from "../services/quote.js";
 
 export function loyaltyRoutes(app: FastifyInstance, base: Ctx) {
   const { prisma } = base;
@@ -59,49 +60,15 @@ export function loyaltyRoutes(app: FastifyInstance, base: Ctx) {
     return loyaltyBalances(prisma, id);
   });
 
-  /** Register preview: reward discounts, totals, and what the sale will earn. Charges nothing. */
-  app.post("/loyalty/quote", staff, async (req) => {
-    const input = parse(
-      z.object({
-        locationId: z.string(),
-        customerId: z.string().optional(),
-        lines: z.array(CartLine).min(1),
-        rewardIds: z.array(z.string()).default([]),
-        creditPaidCents: z.number().int().nonnegative().default(0),
-      }),
-      req.body,
-    );
-    const [program, location, variants] = await Promise.all([
-      getProgram(prisma),
-      prisma.location.findUniqueOrThrow({ where: { id: input.locationId } }),
-      prisma.variant.findMany({ where: { id: { in: input.lines.map((l) => l.variantId) } }, include: { product: true } }),
-    ]);
-    const lines = input.lines.map((l) => {
-      const v = variants.find((x) => x.id === l.variantId);
-      if (!v) throw notFound(`Variant ${l.variantId}`);
-      const unitPriceCents = l.unitPriceCents ?? v.priceCents;
-      return {
-        variantId: v.id,
-        productId: v.productId,
-        kind: v.product.kind,
-        unitPriceCents,
-        quantity: l.quantity,
-        discountCents: Math.min(l.discountCents, unitPriceCents * l.quantity),
-        taxable: v.taxable,
-      };
-    });
-    const { discounts, pointsCost } = await priceRewards(prisma, program, lines, input.rewardIds);
-    const final = lines.map((l, i) => ({ ...l, discountCents: l.discountCents + discounts[i]! }));
-    const dual = dualTotals(final, location.taxRateBps, location.cardPriceBps);
-    const totals = dual.cash;
-    const eligible = final.reduce((a, l) => a + (earns(program, l.kind) ? l.unitPriceCents * l.quantity - l.discountCents : 0), 0);
-    return {
-      ...totals,
-      card: dual.card,
-      rewardDiscounts: discounts,
-      pointsCost,
-      earn: input.customerId ? { unit: unitFor(program), amount: earnFor(program, eligible, totals.totalCents, input.creditPaidCents) } : null,
-      balances: input.customerId ? await loyaltyBalances(prisma, input.customerId) : null,
-    };
+  /** Register preview: deals, rewards, cash/card totals, and what the sale earns. Charges nothing. */
+  const QuoteInput = z.object({
+    locationId: z.string(),
+    customerId: z.string().optional(),
+    lines: z.array(CartLine).min(1),
+    rewardIds: z.array(z.string()).default([]),
+    creditPaidCents: z.number().int().nonnegative().default(0),
   });
+  for (const path of ["/cart/quote", "/loyalty/quote"]) {
+    app.post(path, staff, async (req) => quoteCart(prisma, { ...parse(QuoteInput, req.body), channel: "POS" }));
+  }
 }

@@ -1,3 +1,4 @@
+import { CONFIGURABLE_PRICED_TENDERS } from "@mypos/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { badRequest } from "../errors.js";
@@ -23,6 +24,8 @@ export function pricingRoutes(app: FastifyInstance, base: Ctx) {
         taxRateBps: z.number().int().min(0).max(3_000).optional(),
         /** Card price = cash price + this (399 = 3.99%). 0 turns dual pricing off. */
         cardPriceBps: z.number().int().min(0).max(1_000).optional(),
+        /** Which of gift card / store credit / check / rewards pay the card price (default: none, they pay cash price). */
+        cardPricedTenders: z.array(z.enum(CONFIGURABLE_PRICED_TENDERS)).optional(),
         labelPrinterHost: z.string().max(255).nullable().optional(),
         receiptHeader: z.string().max(500).nullable().optional(),
         receiptFooter: z.string().max(500).nullable().optional(),

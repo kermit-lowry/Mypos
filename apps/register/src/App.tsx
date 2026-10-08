@@ -6,6 +6,7 @@ import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { loadSession, setToken, type Location } from "./api";
 import { BuylistScreen } from "./screens/BuylistScreen";
 import { CustomerDisplayScreen } from "./screens/CustomerDisplayScreen";
+import { DealsScreen } from "./screens/DealsScreen";
 import { EventsScreen } from "./screens/EventsScreen";
 import { LabelsScreen } from "./screens/LabelsScreen";
 import { LoginScreen } from "./screens/LoginScreen";
@@ -16,10 +17,12 @@ import { useLayout } from "./layout";
 import { SessionContext, type Session, type Staff } from "./session";
 import { colors, ui } from "./theme";
 
-const TABS = ["Sell", "Buylist", "Events", "Labels", "Store", "Loyalty", "Display"] as const;
+const TABS = ["Sell", "Buylist", "Events", "Labels", "Deals", "Store", "Loyalty", "Display"] as const;
 type Tab = (typeof TABS)[number];
 /** Tabs only the owner sees. */
 const OWNER_TABS: Tab[] = ["Store", "Loyalty"];
+/** Tabs managers and owners see. */
+const MANAGER_TABS: Tab[] = ["Deals"];
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -67,7 +70,8 @@ export default function App() {
   }
 
   const value = { ...session, signOut };
-  const visible = TABS.filter((t) => session.staff.role === "OWNER" || !OWNER_TABS.includes(t));
+  const role = session.staff.role;
+  const visible = TABS.filter((t) => (OWNER_TABS.includes(t) ? role === "OWNER" : MANAGER_TABS.includes(t) ? role !== "CASHIER" : true));
 
   // Customer display takes over the whole screen.
   if (tab === "Display") {
@@ -111,6 +115,7 @@ export default function App() {
           {tab === "Buylist" && <BuylistScreen />}
           {tab === "Events" && <EventsScreen />}
           {tab === "Labels" && <LabelsScreen />}
+          {tab === "Deals" && <DealsScreen />}
           {tab === "Loyalty" && <LoyaltySettingsScreen />}
           {tab === "Store" && <StoreSettingsScreen onSaved={(location) => setSession({ ...session, location })} />}
         </SafeAreaView>
