@@ -20,7 +20,7 @@ export interface World {
   manager: string;
   owner: string;
   /** Inject with a staff token. */
-  as(token: string, method: "GET" | "POST" | "PATCH", url: string, body?: unknown): Promise<{ status: number; body: any }>;
+  as(token: string, method: "GET" | "POST" | "PUT" | "PATCH", url: string, body?: unknown): Promise<{ status: number; body: any }>;
 }
 
 export async function setup(): Promise<World> {

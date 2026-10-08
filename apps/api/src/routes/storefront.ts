@@ -93,6 +93,7 @@ export function storefrontRoutes(app: FastifyInstance, base: Ctx, opts: { fulfil
         lines: body.lines.map((l) => ({ ...l, discountCents: 0 })),
         tenders: [{ type: "CARD", amountCents: body.amountCents, paymentToken: body.paymentToken }],
         idempotencyKey: `web:${body.idempotencyKey}`,
+        rewardIds: [],
       },
       { allowedTenders: ["CARD"] },
     );

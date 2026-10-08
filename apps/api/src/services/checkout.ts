@@ -1,10 +1,11 @@
 import { Prisma, type ProductKind } from "@prisma/client";
-import { applyBps, cartTotals, type CheckoutInput, type TenderType } from "@mypos/shared";
+import { applyBps, cartTotals, earnFor, type CheckoutInput, type TenderType } from "@mypos/shared";
 import type { Tx } from "../db.js";
 import { AppError, badRequest, conflict, forbidden, notFound, paymentFailed } from "../errors.js";
 import type { GatewayResult } from "../payments/gateway.js";
 import { hasRole, type Ctx } from "./context.js";
 import { moveInventory } from "./inventory.js";
+import { earns, getProgram, loyaltyBalances, postLoyalty, priceRewards, unitFor } from "./loyalty.js";
 import { postCredit } from "./storeCredit.js";
 
 /** Products whose stock is not tracked as inventory. */
@@ -66,6 +67,25 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
     };
   });
 
+  // ── Loyalty rewards (become line discounts, so tax is on the discounted price) ──
+  const program = await getProgram(prisma);
+  if (input.rewardIds.length > 0) {
+    if (!input.customerId) throw badRequest("CUSTOMER_REQUIRED", "Redeeming rewards needs a customer");
+    // The storefront only identifies customers by email, so redemption stays at the register for now.
+    if (!actor) throw forbidden("Rewards are redeemed at the register");
+  }
+  const loyaltyLines = priced.map((p) => ({
+    variantId: p.variant.id,
+    productId: p.variant.productId,
+    kind: p.variant.product.kind,
+    unitPriceCents: p.unitPriceCents,
+    quantity: p.quantity,
+    discountCents: p.discountCents,
+  }));
+  const redemption = await priceRewards(prisma, program, loyaltyLines, input.rewardIds);
+  const rewardDiscounts = redemption.discounts;
+  priced.forEach((p, i) => (p.discountCents += rewardDiscounts[i]!));
+
   const totals = cartTotals(priced, location.taxRateBps);
 
   // ── Validate tenders ───────────────────────────────────────
@@ -79,6 +99,7 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
     if (opts.allowedTenders && !opts.allowedTenders.includes(t.type)) throw badRequest("TENDER_NOT_ALLOWED", `${t.type} not accepted here`);
     if (t.type === "CARD" && !t.paymentToken && !t.terminalId) throw badRequest("CARD_SOURCE", "Card tender needs a token or terminal");
     if (t.type === "STORE_CREDIT" && !input.customerId) throw badRequest("CUSTOMER_REQUIRED", "Store credit needs a customer");
+    if (t.type === "LOYALTY" && !input.customerId) throw badRequest("CUSTOMER_REQUIRED", "Rewards dollars need a customer");
     if (t.type === "GIFT_CARD" && !t.giftCardCode) throw badRequest("GIFT_CARD_CODE", "Gift card code required");
     if (t.type === "EXTERNAL" && !actor) throw forbidden("External tenders are staff-only");
     if (t.type === "CASH") {
@@ -86,6 +107,19 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
       const handed = t.tenderedCents ?? t.amountCents;
       if (handed < t.amountCents) throw badRequest("CASH_SHORT", "Cash handed over is less than the cash amount");
       changeCents += handed - t.amountCents;
+    }
+  }
+
+  // Fail fast on loyalty balances so we don't charge a card only to void it.
+  // (Spends are re-checked under a row lock when committed.)
+  const rewardsTender = input.tenders.filter((t) => t.type === "LOYALTY").reduce((a, t) => a + t.amountCents, 0);
+  if (input.customerId && (redemption.pointsCost > 0 || rewardsTender > 0)) {
+    const bal = await loyaltyBalances(prisma, input.customerId);
+    if (bal.points < redemption.pointsCost) {
+      throw conflict("INSUFFICIENT_POINTS", "Not enough points for these rewards", { balance: bal.points, requested: redemption.pointsCost });
+    }
+    if (bal.rewardsCents < rewardsTender) {
+      throw conflict("INSUFFICIENT_REWARDS", "Not enough rewards dollars", { balance: bal.rewardsCents, requested: rewardsTender });
     }
   }
 
@@ -106,7 +140,7 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
       });
       // Created one at a time so line ids line up with `priced` by index.
       const lineIds: string[] = [];
-      for (const p of priced) {
+      for (const [i, p] of priced.entries()) {
         const line = await tx.orderLine.create({
           data: {
             orderId: o.id,
@@ -115,6 +149,8 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
             quantity: p.quantity,
             unitPriceCents: p.unitPriceCents,
             discountCents: p.discountCents,
+            rewardDiscountCents: rewardDiscounts[i]!,
+            earnsLoyalty: !!input.customerId && program.enabled && earns(program, p.variant.product.kind),
             taxable: p.taxable,
           },
         });
@@ -180,6 +216,9 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
         if (t.type === "STORE_CREDIT") {
           await postCredit(tx, { customerId: input.customerId!, amountCents: -t.amountCents, reason: "Purchase", orderId: order.id });
         }
+        if (t.type === "LOYALTY") {
+          await postLoyalty(tx, { customerId: input.customerId!, unit: "CENTS", amount: -t.amountCents, reason: "Purchase", orderId: order.id });
+        }
         if (t.type === "GIFT_CARD") {
           const debited = await tx.giftCard.updateMany({
             where: { code: t.giftCardCode!, balanceCents: { gte: t.amountCents } },
@@ -213,7 +252,32 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
         if (claimed.count === 0) throw conflict("PREORDER_STATE", "Preorder is no longer reserved");
       }
 
-      await tx.order.update({ where: { id: order.id }, data: { status: "PAID" } });
+      // Spend points on redeemed rewards, then earn on what was actually paid.
+      for (const r of redemption.rewards) {
+        await postLoyalty(tx, { customerId: input.customerId!, unit: "POINTS", amount: -r.pointsCost, reason: "Reward redeemed", orderId: order.id, rewardId: r.id });
+      }
+      let loyaltyEarned = 0;
+      let loyaltyEligibleCents = 0;
+      if (input.customerId && program.enabled) {
+        loyaltyEligibleCents = priced.reduce(
+          (a, p) => a + (earns(program, p.variant.product.kind) ? p.unitPriceCents * p.quantity - p.discountCents : 0),
+          0,
+        );
+        const creditPaid = input.tenders.filter((t) => t.type === "STORE_CREDIT" || t.type === "LOYALTY").reduce((a, t) => a + t.amountCents, 0);
+        loyaltyEarned = earnFor(program, loyaltyEligibleCents, totals.totalCents, creditPaid);
+        await postLoyalty(tx, { customerId: input.customerId, unit: unitFor(program), amount: loyaltyEarned, reason: "Earned", orderId: order.id });
+      }
+
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          status: "PAID",
+          loyaltyEarned,
+          loyaltyUnit: loyaltyEarned > 0 ? unitFor(program) : null,
+          loyaltyEligibleCents,
+          pointsRedeemed: redemption.pointsCost,
+        },
+      });
     });
   } catch (e) {
     await rollbackCharges(ctx, order.id, approved.map((a) => a.result));

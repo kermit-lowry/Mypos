@@ -32,7 +32,11 @@ export function CustomerPicker({ customer, onChange }: { customer: Customer | nu
         {customer ? (
           <View style={[ui.row, { justifyContent: "space-between" }]}>
             <Text style={ui.text}>{customer.name}</Text>
-            <Text style={ui.muted}>Credit {formatCents(customer.storeCreditCents ?? 0)} · tap to remove</Text>
+            <Text style={ui.muted}>
+              Credit {formatCents(customer.storeCreditCents ?? 0)}
+              {customer.loyalty?.points ? ` · ${customer.loyalty.points.toLocaleString()} pts` : ""}
+              {customer.loyalty?.rewardsCents ? ` · ${formatCents(customer.loyalty.rewardsCents)} rewards` : ""} · tap to remove
+            </Text>
           </View>
         ) : (
           <Text style={ui.muted}>+ Attach customer</Text>

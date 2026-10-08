@@ -117,6 +117,20 @@ describe("refunds", () => {
     expect(again.status).toBe(400);
   });
 
+  it("partial refunds add up to exactly what was paid", async () => {
+    // 3 x $10 = $30 + $2.475 tax -> $32.48; refunding one at a time must not round past it.
+    const res = await w.as(w.cashier, "POST", "/orders/checkout", sale([{ variantId: v.nm, quantity: 3 }], [{ type: "CASH", amountCents: 3248 }]));
+    const lineId = res.body.order.lines[0].id;
+    const amounts: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const r = await w.as(w.manager, "POST", `/orders/${res.body.order.id}/refund`, { lines: [{ orderLineId: lineId, quantity: 1 }] });
+      expect(r.status).toBe(200);
+      amounts.push(r.body.refundCents);
+    }
+    expect(amounts.reduce((a, b) => a + b, 0)).toBe(3248);
+    expect((await w.as(w.cashier, "GET", `/orders/${res.body.order.id}`)).body.status).toBe("REFUNDED");
+  });
+
   it("cashiers cannot refund", async () => {
     const res = await w.as(w.cashier, "POST", "/orders/checkout", sale([{ variantId: v.nm, quantity: 1 }], [{ type: "CASH", amountCents: 1083 }]));
     const refund = await w.as(w.cashier, "POST", `/orders/${res.body.order.id}/refund`, { lines: [{ orderLineId: res.body.order.lines[0].id, quantity: 1 }] });

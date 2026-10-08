@@ -6,11 +6,14 @@ import { loadSession, setToken, type Location } from "./api";
 import { BuylistScreen } from "./screens/BuylistScreen";
 import { EventsScreen } from "./screens/EventsScreen";
 import { LoginScreen } from "./screens/LoginScreen";
+import { LoyaltySettingsScreen } from "./screens/LoyaltySettingsScreen";
 import { SellScreen } from "./screens/SellScreen";
 import { SessionContext, type Session, type Staff } from "./session";
 import { colors, ui } from "./theme";
 
-const TABS = { Sell: SellScreen, Buylist: BuylistScreen, Events: EventsScreen } as const;
+const TABS = { Sell: SellScreen, Buylist: BuylistScreen, Events: EventsScreen, Loyalty: LoyaltySettingsScreen } as const;
+/** Tabs only the owner sees. */
+const OWNER_TABS: Tab[] = ["Loyalty"];
 type Tab = keyof typeof TABS;
 
 export default function App() {
@@ -51,7 +54,7 @@ export default function App() {
       <SessionContext.Provider value={{ ...session, signOut }}>
         <SafeAreaView style={ui.screen}>
           <View style={[ui.row, { paddingHorizontal: 16, paddingTop: 8, gap: 8 }]}>
-            {(Object.keys(TABS) as Tab[]).map((t) => (
+            {(Object.keys(TABS) as Tab[]).filter((t) => session.staff.role === "OWNER" || !OWNER_TABS.includes(t)).map((t) => (
               <Pressable
                 key={t}
                 onPress={() => setTab(t)}

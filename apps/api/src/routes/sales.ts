@@ -6,6 +6,7 @@ import { actorOf, parse, requireRole } from "../http.js";
 import { checkout } from "../services/checkout.js";
 import type { Ctx } from "../services/context.js";
 import { refundOrder } from "../services/refunds.js";
+import { loyaltyBalances } from "../services/loyalty.js";
 import { creditBalance, postCredit } from "../services/storeCredit.js";
 
 export function salesRoutes(app: FastifyInstance, base: Ctx) {
@@ -58,7 +59,8 @@ export function salesRoutes(app: FastifyInstance, base: Ctx) {
     const { id } = req.params as { id: string };
     const c = await prisma.customer.findUnique({ where: { id }, include: { consignor: true } });
     if (!c) throw notFound("Customer");
-    return { ...c, storeCreditCents: await creditBalance(prisma, id) };
+    const [storeCreditCents, loyalty] = await Promise.all([creditBalance(prisma, id), loyaltyBalances(prisma, id)]);
+    return { ...c, storeCreditCents, loyalty };
   });
 
   app.post("/customers/:id/credit", manager, async (req) => {

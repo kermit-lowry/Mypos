@@ -8,6 +8,7 @@ import {
   SalesChannels,
   TenderTypes,
 } from "./enums.js";
+import { LoyaltyTypes, RewardTypes } from "./loyalty.js";
 
 const cents = z.number().int().nonnegative();
 const id = z.string().min(1);
@@ -96,6 +97,8 @@ export const CheckoutInput = z.object({
   /** Client-generated idempotency key so retries on flaky store wifi never double-charge. */
   idempotencyKey: z.string().min(8),
   note: z.string().optional(),
+  /** Points rewards to redeem on this sale (POINTS programs). */
+  rewardIds: z.array(id).max(10).default([]),
 });
 export type CheckoutInput = z.infer<typeof CheckoutInput>;
 
@@ -196,3 +199,32 @@ export const CustomerInput = z.object({
   /** e.g. Pokémon Player ID, Konami ID, Bandai ID — used for event reporting. */
   playerIds: z.record(z.string()).default({}),
 });
+
+export const LoyaltyProgramInput = z.object({
+  enabled: z.boolean(),
+  type: z.enum(LoyaltyTypes),
+  cashbackBps: z.number().int().min(0).max(10_000).default(0),
+  pointsPerDollar: z.number().int().min(0).max(1_000).default(1),
+  excludedKinds: z.array(z.enum(ProductKinds)).default([]),
+  earnOnCredit: z.boolean().default(false),
+});
+export type LoyaltyProgramInput = z.infer<typeof LoyaltyProgramInput>;
+
+export const RewardInput = z
+  .object({
+    name: z.string().min(1),
+    type: z.enum(RewardTypes),
+    pointsCost: z.number().int().positive(),
+    percentBps: z.number().int().min(1).max(10_000).optional(),
+    amountCents: cents.optional(),
+    maxDiscountCents: cents.optional(),
+    variantId: id.optional(),
+    productId: id.optional(),
+    active: z.boolean().default(true),
+  })
+  .superRefine((r, ctx) => {
+    if (r.type === "PERCENT_OFF" && !r.percentBps) ctx.addIssue({ code: "custom", path: ["percentBps"], message: "Required for % off" });
+    if (r.type === "AMOUNT_OFF" && !r.amountCents) ctx.addIssue({ code: "custom", path: ["amountCents"], message: "Required for $ off" });
+    if (r.type === "ITEM" && !r.variantId && !r.productId) ctx.addIssue({ code: "custom", path: ["variantId"], message: "Pick the item" });
+  });
+export type RewardInput = z.infer<typeof RewardInput>;

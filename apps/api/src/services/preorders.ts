@@ -141,6 +141,7 @@ export async function fulfillPreorder(
       lines: [{ variantId: pre.preorderProduct.variantId, quantity: pre.quantity, discountCents: 0 }],
       tenders: input.tenders,
       idempotencyKey: input.idempotencyKey,
+      rewardIds: [],
     },
     { preorder: { id: pre.id, depositCents: pre.depositPaidCents } },
   );

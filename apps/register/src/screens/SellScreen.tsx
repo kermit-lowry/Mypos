@@ -1,11 +1,12 @@
 import { cartTotals, formatCents, type TenderInput } from "@mypos/shared";
 import * as Crypto from "expo-crypto";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Alert, FlatList, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { api, ApiError, type Customer, type Product, type Variant } from "../api";
+import { api, ApiError, type Customer, type LoyaltyProgram, type LoyaltyQuote, type Product, type Variant } from "../api";
 import { Button } from "../components/Button";
 import { CustomerPicker } from "../components/CustomerPicker";
 import { ProductSearch, variantLabel } from "../components/ProductSearch";
+import { RewardsPicker } from "../components/RewardsPicker";
 import { isManager, useSession } from "../session";
 import { colors, ui } from "../theme";
 
@@ -24,8 +25,17 @@ export function SellScreen() {
   const [lines, setLines] = useState<Line[]>([]);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [tendering, setTendering] = useState(false);
+  const [program, setProgram] = useState<LoyaltyProgram | null>(null);
+  const [rewardIds, setRewardIds] = useState<string[]>([]);
+  const [pickingRewards, setPickingRewards] = useState(false);
+  const [quote, setQuote] = useState<LoyaltyQuote | null>(null);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
 
-  const totals = useMemo(
+  useEffect(() => {
+    api<LoyaltyProgram>("GET", "/loyalty/program").then(setProgram).catch(() => setProgram(null));
+  }, []);
+
+  const localTotals = useMemo(
     () =>
       cartTotals(
         lines.map((l) => ({ unitPriceCents: l.variant.priceCents, quantity: l.quantity, discountCents: l.discountCents, taxable: l.variant.taxable })),
@@ -33,6 +43,31 @@ export function SellScreen() {
       ),
     [lines, location.taxRateBps],
   );
+
+  // With a customer attached, the server prices rewards and previews what the sale earns.
+  const loyaltyOn = !!program?.enabled && !!customer;
+  useEffect(() => {
+    if (!loyaltyOn || lines.length === 0) {
+      setQuote(null);
+      setQuoteError(null);
+      return;
+    }
+    let live = true;
+    api<LoyaltyQuote>("POST", "/loyalty/quote", {
+      locationId: location.id,
+      customerId: customer!.id,
+      lines: lines.map((l) => ({ variantId: l.variant.id, quantity: l.quantity, discountCents: l.discountCents })),
+      rewardIds,
+    })
+      .then((q) => live && (setQuote(q), setQuoteError(null)))
+      .catch((e) => live && (setQuote(null), setQuoteError(e instanceof ApiError ? e.message : String(e))));
+    return () => {
+      live = false;
+    };
+  }, [loyaltyOn, lines, rewardIds, customer, location.id]);
+
+  const totals = quote ?? localTotals;
+  const quoteReady = rewardIds.length === 0 || (!!quote && !quoteError);
 
   function add(product: Product, variant: Variant) {
     setLines((prev) => {
@@ -63,6 +98,7 @@ export function SellScreen() {
   function reset() {
     setLines([]);
     setCustomer(null);
+    setRewardIds([]);
     setTendering(false);
   }
 
@@ -73,7 +109,20 @@ export function SellScreen() {
       </View>
 
       <View style={[ui.panel, { flex: 2, gap: 12 }]}>
-        <CustomerPicker customer={customer} onChange={setCustomer} />
+        <CustomerPicker
+          customer={customer}
+          onChange={(c) => {
+            setCustomer(c);
+            setRewardIds([]);
+          }}
+        />
+        {loyaltyOn && program!.type === "POINTS" && (
+          <Button
+            title={rewardIds.length ? `${rewardIds.length} reward(s) applied` : "Redeem points"}
+            kind="secondary"
+            onPress={() => setPickingRewards(true)}
+          />
+        )}
         <FlatList
           style={{ flex: 1 }}
           data={lines}
@@ -107,16 +156,26 @@ export function SellScreen() {
         />
         <View style={{ gap: 4 }}>
           <Row label="Subtotal" value={totals.subtotalCents} />
-          {totals.discountCents > 0 && <Row label="Discounts" value={-totals.discountCents} />}
+          {totals.discountCents > 0 && <Row label={rewardIds.length ? "Discounts & rewards" : "Discounts"} value={-totals.discountCents} />}
           <Row label={`Tax (${(location.taxRateBps / 100).toFixed(2)}%)`} value={totals.taxCents} />
           <Row label="Total" value={totals.totalCents} big />
+          {quote?.earn && quote.earn.amount > 0 && (
+            <Text style={[ui.muted, { color: colors.good }]}>
+              Earns {quote.earn.unit === "POINTS" ? `${quote.earn.amount.toLocaleString()} pts` : `${formatCents(quote.earn.amount)} rewards`}
+            </Text>
+          )}
+          {quoteError && <Text style={ui.error}>{quoteError}</Text>}
         </View>
         <View style={[ui.row, { gap: 8 }]}>
           <Button title="Clear" kind="secondary" onPress={reset} disabled={!lines.length} />
-          <Button title={`Charge ${formatCents(totals.totalCents)}`} kind="good" onPress={() => setTendering(true)} disabled={!lines.length} style={{ flex: 1 }} />
+          <Button title={`Charge ${formatCents(totals.totalCents)}`} kind="good" onPress={() => setTendering(true)} disabled={!lines.length || !quoteReady} style={{ flex: 1 }} />
         </View>
         {!isManager(staff) && <Text style={ui.muted}>Price overrides and refunds need a manager.</Text>}
       </View>
+
+      {pickingRewards && customer && (
+        <RewardsPicker points={customer.loyalty?.points ?? 0} selected={rewardIds} onChange={setRewardIds} onClose={() => setPickingRewards(false)} />
+      )}
 
       {tendering && (
         <TenderSheet
@@ -130,6 +189,7 @@ export function SellScreen() {
               lines: lines.map((l) => ({ variantId: l.variant.id, quantity: l.quantity, discountCents: l.discountCents })),
               tenders,
               idempotencyKey,
+              rewardIds,
             })
           }
           onDone={reset}
@@ -167,6 +227,8 @@ function TenderSheet(props: {
   const due = props.totalCents - paid;
   const credit = props.customer?.storeCreditCents ?? 0;
   const creditUsed = tenders.filter((t) => t.type === "STORE_CREDIT").reduce((a, t) => a + t.amountCents, 0);
+  const rewards = props.customer?.loyalty?.rewardsCents ?? 0;
+  const rewardsUsed = tenders.filter((t) => t.type === "LOYALTY").reduce((a, t) => a + t.amountCents, 0);
 
   const addCash = (handed: number) => {
     if (handed <= 0 || due <= 0) return;
@@ -178,6 +240,11 @@ function TenderSheet(props: {
   const addCredit = () => {
     const amt = Math.min(due, credit - creditUsed);
     if (amt > 0) setTenders((t) => [...t, { type: "STORE_CREDIT", amountCents: amt }]);
+  };
+
+  const addRewards = () => {
+    const amt = Math.min(due, rewards - rewardsUsed);
+    if (amt > 0) setTenders((t) => [...t, { type: "LOYALTY", amountCents: amt }]);
   };
 
   async function complete() {
@@ -209,7 +276,7 @@ function TenderSheet(props: {
               {tenders.map((t, i) => (
                 <View key={i} style={[ui.row, { justifyContent: "space-between" }]}>
                   <Text style={ui.text}>
-                    {t.type.replace("_", " ")}
+                    {t.type === "LOYALTY" ? "REWARDS" : t.type.replace("_", " ")}
                     {t.tenderedCents && t.tenderedCents > t.amountCents ? ` (handed ${formatCents(t.tenderedCents)})` : ""}
                   </Text>
                   <Pressable onPress={() => setTenders((ts) => ts.filter((_, j) => j !== i))}>
@@ -239,6 +306,9 @@ function TenderSheet(props: {
                     <Button title={`Card ${formatCents(due)}`} onPress={addCard} style={{ flex: 1 }} />
                     {credit - creditUsed > 0 && (
                       <Button title={`Store credit (${formatCents(credit - creditUsed)})`} kind="secondary" onPress={addCredit} style={{ flex: 1 }} />
+                    )}
+                    {rewards - rewardsUsed > 0 && (
+                      <Button title={`Rewards (${formatCents(rewards - rewardsUsed)})`} kind="secondary" onPress={addRewards} style={{ flex: 1 }} />
                     )}
                   </View>
                 </>

@@ -77,6 +77,7 @@ model Customer {
   registrations  EventRegistration[]
   preorders      Preorder[]
   consignor      Consignor?
+  loyalty        LoyaltyEntry[]
 }
 
 /// Append-only ledger. Balance = SUM(amountCents). Never update rows.
@@ -302,6 +303,12 @@ model Order {
   taxCents       Int
   totalCents     Int
   note           String?
+  /// Loyalty earned on this sale, in the program's unit at the time.
+  loyaltyEarned   Int          @default(0)
+  loyaltyUnit     LoyaltyUnit?
+  /// Spend that earned, used to claw back proportionally on refunds.
+  loyaltyEligibleCents Int     @default(0)
+  pointsRedeemed  Int          @default(0)
   createdAt      DateTime     @default(now())
 
   lines    OrderLine[]
@@ -320,7 +327,12 @@ model OrderLine {
   title          String
   quantity       Int
   unitPriceCents Int
+  /// Total discount, including rewardDiscountCents.
   discountCents  Int     @default(0)
+  /// Portion of discountCents that came from loyalty rewards.
+  rewardDiscountCents Int @default(0)
+  /// Whether this line counted toward loyalty earning.
+  earnsLoyalty   Boolean @default(false)
   taxable        Boolean
   refundedQty    Int     @default(0)
   /// Set when the line sold a consigned unit.
@@ -578,4 +590,65 @@ model ChannelSyncCursor {
   /// Opaque cursor / timestamp for incremental order pulls.
   cursor    String?
   updatedAt DateTime     @updatedAt
+}
+
+// ─── Loyalty ─────────────────────────────────────────────────────
+
+enum LoyaltyType {
+  CASHBACK
+  POINTS
+}
+
+enum LoyaltyUnit {
+  /// Rewards dollars (CASHBACK programs), in cents.
+  CENTS
+  POINTS
+}
+
+/// Owner-configured program. One row, id "default".
+model LoyaltyProgram {
+  id              String        @id @default("default")
+  enabled         Boolean       @default(false)
+  type            LoyaltyType   @default(POINTS)
+  cashbackBps     Int           @default(0)
+  pointsPerDollar Int           @default(1)
+  excludedKinds   ProductKind[] @default([])
+  earnOnCredit    Boolean       @default(false)
+  updatedAt       DateTime      @updatedAt
+}
+
+enum RewardType {
+  PERCENT_OFF
+  AMOUNT_OFF
+  ITEM
+}
+
+/// A points reward the owner offers, e.g. "500 pts = 10% off", "200 pts = free booster".
+model LoyaltyReward {
+  id               String     @id @default(cuid())
+  name             String
+  type             RewardType
+  pointsCost       Int
+  percentBps       Int?
+  amountCents      Int?
+  maxDiscountCents Int?
+  variantId        String?
+  productId        String?
+  active           Boolean    @default(true)
+  createdAt        DateTime   @default(now())
+}
+
+/// Append-only ledger. Balance per unit = SUM(amount).
+model LoyaltyEntry {
+  id         String      @id @default(cuid())
+  customerId String
+  customer   Customer    @relation(fields: [customerId], references: [id])
+  unit       LoyaltyUnit
+  amount     Int
+  reason     String
+  orderId    String?
+  rewardId   String?
+  createdAt  DateTime    @default(now())
+
+  @@index([customerId, unit])
 }

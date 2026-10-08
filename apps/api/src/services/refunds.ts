@@ -3,10 +3,11 @@ import { roundHalfUp, type RefundInput } from "@mypos/shared";
 import { badRequest, conflict, notFound } from "../errors.js";
 import type { Ctx } from "./context.js";
 import { moveInventory } from "./inventory.js";
+import { postLoyalty } from "./loyalty.js";
 import { postCredit } from "./storeCredit.js";
 
 /** Order in which original tenders are paid back. */
-const REFUND_ORDER = ["CARD", "GIFT_CARD", "STORE_CREDIT", "PREORDER_DEPOSIT", "EXTERNAL", "CASH"];
+const REFUND_ORDER = ["CARD", "GIFT_CARD", "STORE_CREDIT", "LOYALTY", "PREORDER_DEPOSIT", "EXTERNAL", "CASH"];
 
 export interface RefundLeg {
   tender: string;
@@ -39,16 +40,27 @@ export async function refundOrder(ctx: Ctx, input: RefundInput): Promise<RefundR
 
     const taxableBase = order.lines.filter((l) => l.taxable).reduce((a, l) => a + l.unitPriceCents * l.quantity - l.discountCents, 0);
 
+    // Amounts are computed cumulatively (refunded-so-far after minus before),
+    // so a run of partial refunds always sums to exactly what was paid.
+    const netAt = (l: { unitPriceCents: number; quantity: number; discountCents: number }, qty: number) =>
+      roundHalfUp(((l.unitPriceCents * l.quantity - l.discountCents) * qty) / l.quantity);
+    const taxAt = (taxableNet: number) => (taxableBase > 0 ? roundHalfUp((order.taxCents * taxableNet) / taxableBase) : 0);
+    let taxableRefunded = order.lines.filter((l) => l.taxable).reduce((a, l) => a + netAt(l, l.refundedQty), 0);
+    const taxBefore = taxAt(taxableRefunded);
+
+    if (new Set(input.lines.map((l) => l.orderLineId)).size !== input.lines.length) {
+      throw badRequest("DUPLICATE_LINE", "List each order line once");
+    }
+
     let total = 0;
     for (const req of input.lines) {
       const line = order.lines.find((l) => l.id === req.orderLineId);
       if (!line) throw notFound(`Order line ${req.orderLineId}`);
       if (req.quantity > line.quantity - line.refundedQty) throw badRequest("REFUND_QTY", `Only ${line.quantity - line.refundedQty} refundable on ${line.title}`);
 
-      const lineNet = line.unitPriceCents * line.quantity - line.discountCents;
-      const net = roundHalfUp((lineNet * req.quantity) / line.quantity);
-      const tax = line.taxable && taxableBase > 0 ? roundHalfUp((order.taxCents * net) / taxableBase) : 0;
-      total += net + tax;
+      const net = netAt(line, line.refundedQty + req.quantity) - netAt(line, line.refundedQty);
+      if (line.taxable) taxableRefunded += net;
+      total += net;
 
       await tx.orderLine.update({ where: { id: line.id }, data: { refundedQty: { increment: req.quantity } } });
 
@@ -95,6 +107,8 @@ export async function refundOrder(ctx: Ctx, input: RefundInput): Promise<RefundR
       }
     }
 
+    total += taxAt(taxableRefunded) - taxBefore;
+
     // Allocate the refund across tenders.
     const legs: RefundLeg[] = [];
     const cardLegs: { payment: Payment; amountCents: number }[] = [];
@@ -120,6 +134,9 @@ export async function refundOrder(ctx: Ctx, input: RefundInput): Promise<RefundR
         if (p.tender === "STORE_CREDIT" || p.tender === "PREORDER_DEPOSIT") {
           await postCredit(tx, { customerId: order.customerId!, amountCents: take, reason: "Refund", orderId: order.id });
         }
+        if (p.tender === "LOYALTY") {
+          await postLoyalty(tx, { customerId: order.customerId!, unit: "CENTS", amount: take, reason: "Refund", orderId: order.id });
+        }
         if (p.tender === "GIFT_CARD" && p.gatewayRef) {
           await tx.giftCard.update({ where: { code: p.gatewayRef }, data: { balanceCents: { increment: take } } });
         }
@@ -133,6 +150,30 @@ export async function refundOrder(ctx: Ctx, input: RefundInput): Promise<RefundR
 
     const lines = await tx.orderLine.findMany({ where: { orderId: order.id } });
     const fully = lines.every((l) => l.refundedQty === l.quantity);
+
+    // Loyalty: take back what the returned items earned. Computed on the
+    // cumulative refunded amount so a series of partial refunds claws back
+    // exactly what was earned, never more.
+    if (order.customerId && order.loyaltyEarned > 0 && order.loyaltyUnit && order.loyaltyEligibleCents > 0) {
+      const refundedEligible = lines
+        .filter((l) => l.earnsLoyalty)
+        .reduce((a, l) => a + roundHalfUp(((l.unitPriceCents * l.quantity - l.discountCents) * l.refundedQty) / l.quantity), 0);
+      const target = Math.min(order.loyaltyEarned, roundHalfUp((order.loyaltyEarned * refundedEligible) / order.loyaltyEligibleCents));
+      const prior = await tx.loyaltyEntry.aggregate({
+        where: { orderId: order.id, reason: "Refund clawback", unit: order.loyaltyUnit },
+        _sum: { amount: true },
+      });
+      const clawed = -(prior._sum.amount ?? 0);
+      await postLoyalty(
+        tx,
+        { customerId: order.customerId, unit: order.loyaltyUnit, amount: -(target - clawed), reason: "Refund clawback", orderId: order.id },
+        { allowNegative: true },
+      );
+    }
+    // Points spent on rewards come back only when the whole sale is returned.
+    if (fully && order.customerId && order.pointsRedeemed > 0) {
+      await postLoyalty(tx, { customerId: order.customerId, unit: "POINTS", amount: order.pointsRedeemed, reason: "Reward returned", orderId: order.id });
+    }
     await tx.order.update({ where: { id: order.id }, data: { status: fully ? "REFUNDED" : "PARTIALLY_REFUNDED" } });
 
     return { refundCents: total, cardLegs, legs, orderId: order.id };

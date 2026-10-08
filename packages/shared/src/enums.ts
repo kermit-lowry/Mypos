@@ -22,7 +22,7 @@ export type ItemCondition = (typeof ItemConditions)[number];
 export const SalesChannels = ["POS", "STOREFRONT", "SHOPIFY", "TCGPLAYER", "EBAY"] as const;
 export type SalesChannel = (typeof SalesChannels)[number];
 
-export const TenderTypes = ["CARD", "CASH", "STORE_CREDIT", "GIFT_CARD", "EXTERNAL"] as const;
+export const TenderTypes = ["CARD", "CASH", "STORE_CREDIT", "LOYALTY", "GIFT_CARD", "EXTERNAL"] as const;
 export type TenderType = (typeof TenderTypes)[number];
 
 export const BuylistPayouts = ["CASH", "STORE_CREDIT"] as const;

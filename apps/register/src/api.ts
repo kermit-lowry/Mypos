@@ -38,7 +38,7 @@ export const getApiUrl = () => baseUrl;
  * retried with the same key, so a sale is never charged twice when the store
  * wifi drops mid-request.
  */
-export async function api<T = any>(method: "GET" | "POST" | "PATCH", path: string, body?: unknown): Promise<T> {
+export async function api<T = any>(method: "GET" | "POST" | "PUT" | "PATCH", path: string, body?: unknown): Promise<T> {
   const retries = body && typeof body === "object" && "idempotencyKey" in body ? 3 : 0;
   for (let attempt = 0; ; attempt++) {
     let res: Response;
@@ -93,6 +93,31 @@ export interface Customer {
   name: string;
   email: string | null;
   storeCreditCents?: number;
+  loyalty?: { points: number; rewardsCents: number };
+}
+
+export interface LoyaltyProgram {
+  enabled: boolean;
+  type: "CASHBACK" | "POINTS";
+  cashbackBps: number;
+  pointsPerDollar: number;
+}
+
+export interface Reward {
+  id: string;
+  name: string;
+  type: "PERCENT_OFF" | "AMOUNT_OFF" | "ITEM";
+  pointsCost: number;
+}
+
+export interface LoyaltyQuote {
+  subtotalCents: number;
+  discountCents: number;
+  taxCents: number;
+  totalCents: number;
+  rewardDiscounts: number[];
+  pointsCost: number;
+  earn: { unit: "POINTS" | "CENTS"; amount: number } | null;
 }
 
 export interface Location {

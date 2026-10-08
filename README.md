@@ -43,6 +43,7 @@ pnpm test
 | **Authentication** | Pass/fail/inconclusive records with method, notes, photos, per item. |
 | **Events** | Tournaments with capacity and entry fee; entries ring up like any item and create the registration. Roster with player IDs and check-in. |
 | **Preorders** | Allocation and per-customer limits, deposits, balance collected at pickup, cancel to card or store credit. |
+| **Loyalty** | The owner picks one of two types. **Cashback:** a set % of every pre-tax dollar becomes rewards dollars, spent like a tender. **Points:** points per dollar, spent on rewards the owner defines: % off (optional cap), $ off, or a specific item free or $X off. The owner can exclude product types (e.g. event entries) and decide whether purchases paid with store credit earn. Rewards are applied before tax. Refunds take back exactly what the returned items earned, and give back redeemed points on a full return. Online orders earn; rewards are redeemed at the register. |
 | **Storefront** | Public `/storefront/*` API: browse products published to `STOREFRONT`, card-only checkout against the same inventory. |
 | **Channels** | Pushes available quantities to Shopify/eBay/TCGplayer and imports their paid orders (idempotent). |
 | **Reports** | Daily totals by tender, by product type (with cost), and buylist payouts. |
