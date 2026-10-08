@@ -4,6 +4,7 @@ import { FlatList, Text, TextInput, View } from "react-native";
 import { api, ApiError, type Customer, type Product, type Variant } from "../api";
 import { Button } from "../components/Button";
 import { CustomerPicker } from "../components/CustomerPicker";
+import { SplitPane } from "../components/SplitPane";
 import { ProductSearch, variantLabel } from "../components/ProductSearch";
 import { isManager, useSession } from "../session";
 import { colors, ui } from "../theme";
@@ -52,55 +53,64 @@ export function BuylistScreen() {
   }
 
   return (
-    <View style={{ flex: 1, flexDirection: "row", gap: 16, padding: 16 }}>
-      <View style={[ui.panel, { flex: 3 }]}>
-        <ProductSearch onPick={add} />
-      </View>
-      <View style={[ui.panel, { flex: 2, gap: 12 }]}>
-        <CustomerPicker customer={customer} onChange={setCustomer} />
-        <FlatList
-          style={{ flex: 1 }}
-          data={lines}
-          keyExtractor={(_, i) => String(i)}
-          ListEmptyComponent={<Text style={[ui.muted, { textAlign: "center", marginTop: 40 }]}>Add what the customer is selling</Text>}
-          renderItem={({ item: l, index }) => (
-            <View style={{ paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border, gap: 4 }}>
-              <Text style={ui.text} numberOfLines={1}>
-                {l.quantity}× {l.product.title}
-              </Text>
-              <Text style={ui.muted}>{variantLabel(l.variant)}</Text>
-              <View style={[ui.row, { gap: 8 }]}>
-                <Text style={ui.muted}>Market $</Text>
-                <TextInput
-                  style={[ui.input, { width: 100, paddingVertical: 6 }]}
-                  keyboardType="decimal-pad"
-                  defaultValue={(l.marketCents / 100).toFixed(2)}
-                  onEndEditing={(e) => {
-                    const cents = Math.round(Number(e.nativeEvent.text) * 100);
-                    if (Number.isFinite(cents)) setLines((prev) => prev.map((x, j) => (j === index ? { ...x, marketCents: cents } : x)));
-                  }}
-                />
-                <Text style={ui.muted}>
-                  {offers[index]!.accepted ? `${formatCents(offers[index]!.cashCents)} cash / ${formatCents(offers[index]!.creditCents)} credit` : "Below buy minimum"}
-                </Text>
-              </View>
-            </View>
-          )}
-        />
-        {message && <Text style={ui.text}>{message}</Text>}
-        {!isManager(staff) && lines.length > 0 && <Text style={ui.muted}>A manager must approve payouts.</Text>}
-        <View style={[ui.row, { gap: 8 }]}>
-          <Button title={`Cash ${formatCents(cash)}`} onPress={() => payout("CASH")} disabled={!lines.length || !isManager(staff)} busy={busy} style={{ flex: 1 }} />
-          <Button
-            title={`Credit ${formatCents(credit)}`}
-            kind="good"
-            onPress={() => payout("STORE_CREDIT")}
-            disabled={!lines.length || !customer || !isManager(staff)}
-            busy={busy}
+    <SplitPane
+      rightLabel={`Ticket (${lines.length})`}
+      left={<ProductSearch onPick={add} />}
+      right={
+        <>
+          <CustomerPicker customer={customer} onChange={setCustomer} />
+          <FlatList
             style={{ flex: 1 }}
+            data={lines}
+            keyExtractor={(_, i) => String(i)}
+            ListEmptyComponent={<Text style={[ui.muted, { textAlign: "center", marginTop: 40 }]}>Add what the customer is selling</Text>}
+            renderItem={({ item: l, index }) => (
+              <View style={{ paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border, gap: 4 }}>
+                <Text style={ui.text} numberOfLines={1}>
+                  {l.quantity}× {l.product.title}
+                </Text>
+                <Text style={ui.muted}>{variantLabel(l.variant)}</Text>
+                <View style={[ui.row, { gap: 8 }]}>
+                  <Text style={ui.muted}>Market $</Text>
+                  <TextInput
+                    style={[ui.input, { width: 100, paddingVertical: 6 }]}
+                    keyboardType="decimal-pad"
+                    defaultValue={(l.marketCents / 100).toFixed(2)}
+                    onEndEditing={(e) => {
+                      const cents = Math.round(Number(e.nativeEvent.text) * 100);
+                      if (Number.isFinite(cents)) setLines((prev) => prev.map((x, j) => (j === index ? { ...x, marketCents: cents } : x)));
+                    }}
+                  />
+                  <Text style={ui.muted}>
+                    {offers[index]!.accepted
+                      ? `${formatCents(offers[index]!.cashCents)} cash / ${formatCents(offers[index]!.creditCents)} credit`
+                      : "Below buy minimum"}
+                  </Text>
+                </View>
+              </View>
+            )}
           />
-        </View>
-      </View>
-    </View>
+          {message && <Text style={ui.text}>{message}</Text>}
+          {!isManager(staff) && lines.length > 0 && <Text style={ui.muted}>A manager must approve payouts.</Text>}
+          <View style={[ui.row, { gap: 8 }]}>
+            <Button
+              title={`Cash ${formatCents(cash)}`}
+              onPress={() => payout("CASH")}
+              disabled={!lines.length || !isManager(staff)}
+              busy={busy}
+              style={{ flex: 1 }}
+            />
+            <Button
+              title={`Credit ${formatCents(credit)}`}
+              kind="good"
+              onPress={() => payout("STORE_CREDIT")}
+              disabled={!lines.length || !customer || !isManager(staff)}
+              busy={busy}
+              style={{ flex: 1 }}
+            />
+          </View>
+        </>
+      }
+    />
   );
 }

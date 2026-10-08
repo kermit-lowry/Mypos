@@ -1,7 +1,8 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { formatCents } from "@mypos/shared";
-import { useState } from "react";
-import { FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import * as SecureStore from "../storage";
+import { useEffect, useRef, useState } from "react";
+import { FlatList, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { api, ApiError, type Product, type Variant } from "../api";
 import { useSession } from "../session";
 import { colors, ui } from "../theme";
@@ -21,6 +22,20 @@ export function ProductSearch({ onPick }: { onPick: (p: Product, v: Variant) => 
   const [error, setError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
+  const input = useRef<TextInput>(null);
+  // Devices with a built-in or USB/Bluetooth scanner "type" the barcode and
+  // press Enter. Scanner mode keeps the box focused without the on-screen
+  // keyboard covering the screen (Android; iPads hide it for hardware keyboards).
+  const [scannerMode, setScannerMode] = useState(false);
+  useEffect(() => {
+    SecureStore.getItem("scannerMode").then((v) => setScannerMode(v === "1"));
+  }, []);
+  const toggleScanner = () => {
+    const next = !scannerMode;
+    setScannerMode(next);
+    SecureStore.setItem("scannerMode", next ? "1" : "0");
+    setTimeout(() => input.current?.focus(), 50);
+  };
 
   async function search(term: string) {
     if (!term.trim()) return;
@@ -36,6 +51,9 @@ export function ProductSearch({ onPick }: { onPick: (p: Product, v: Variant) => 
       }
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      // Ready for the next scan.
+      input.current?.focus();
     }
   }
 
@@ -48,8 +66,12 @@ export function ProductSearch({ onPick }: { onPick: (p: Product, v: Variant) => 
     <View style={{ flex: 1 }}>
       <View style={[ui.row, { gap: 8 }]}>
         <TextInput
-          style={[ui.input, { flex: 1 }]}
-          placeholder="Search card, set, style code, SKU…"
+          ref={input}
+          style={[ui.input, { flex: 1, minWidth: 0 }]}
+          placeholder={scannerMode ? "Scan or type…" : "Search card, set, style code, SKU…"}
+          autoFocus
+          blurOnSubmit={false}
+          showSoftInputOnFocus={!scannerMode}
           placeholderTextColor={colors.muted}
           value={q}
           onChangeText={setQ}
@@ -58,7 +80,8 @@ export function ProductSearch({ onPick }: { onPick: (p: Product, v: Variant) => 
           autoCapitalize="none"
           returnKeyType="search"
         />
-        <Button title="Scan" kind="secondary" onPress={openScanner} />
+        <Button title="Camera" kind="secondary" onPress={openScanner} />
+        {Platform.OS === "android" && <Button title={scannerMode ? "⌨ Off" : "⌨ On"} kind="secondary" onPress={toggleScanner} />}
       </View>
       {error && <Text style={[ui.error, { marginTop: 8 }]}>{error}</Text>}
       <FlatList

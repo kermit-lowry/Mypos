@@ -4,6 +4,7 @@ import { FlatList, Pressable, Text, View } from "react-native";
 import { api } from "../api";
 import { TerminalPicker, useTerminal } from "../components/TerminalPicker";
 import { displayChannel, type DisplayState } from "../display";
+import { useLayout } from "../layout";
 import { useSession } from "../session";
 import { colors, ui } from "../theme";
 
@@ -15,6 +16,7 @@ import { colors, ui } from "../theme";
 export function CustomerDisplayScreen({ onExit }: { onExit: () => void }) {
   const { location } = useSession();
   const { terminal, terminals, select } = useTerminal();
+  const { compact } = useLayout();
   const channel = displayChannel(location.id, terminal?.id);
   const [d, setD] = useState<DisplayState>({ state: "IDLE", storeName: location.name });
 
@@ -73,7 +75,7 @@ export function CustomerDisplayScreen({ onExit }: { onExit: () => void }) {
 
   const dual = d.cardPercent !== null;
   return (
-    <View style={[ui.screen, { flexDirection: "row", padding: 24, gap: 24 }]}>
+    <View style={[ui.screen, { flexDirection: compact ? "column" : "row", padding: compact ? 12 : 24, gap: compact ? 12 : 24 }]}>
       <View style={[ui.panel, { flex: 3 }]}>
         <View style={[ui.row, { paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: colors.border }]}>
           <Text style={[ui.muted, { flex: 1, fontSize: 16 }]}>Item</Text>
@@ -99,7 +101,7 @@ export function CustomerDisplayScreen({ onExit }: { onExit: () => void }) {
         />
       </View>
 
-      <View style={{ flex: 2, gap: 16 }}>
+      <View style={{ flex: compact ? 0 : 2, gap: compact ? 8 : 16 }}>
         {d.customer && (
           <View style={ui.panel}>
             <Text style={[ui.text, { fontSize: 20 }]}>Hi, {d.customer.name.split(" ")[0]}!</Text>

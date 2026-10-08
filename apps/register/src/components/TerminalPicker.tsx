@@ -1,8 +1,9 @@
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "../storage";
 import { useEffect, useState } from "react";
 import { Modal, Pressable, Text, View } from "react-native";
 import { api } from "../api";
 import { useSession } from "../session";
+import { useLayout } from "../layout";
 import { colors, ui } from "../theme";
 import { Button } from "./Button";
 
@@ -11,6 +12,7 @@ export interface Terminal {
   name: string;
   model: string | null;
   gatewayRef: string;
+  receiptPrinterHost: string | null;
 }
 
 /** The card terminal paired with this register, remembered on the device. */
@@ -22,7 +24,7 @@ export function useTerminal() {
   useEffect(() => {
     (async () => {
       const list = await api<Terminal[]>("GET", `/terminals?locationId=${location.id}`).catch(() => []);
-      const saved = await SecureStore.getItemAsync(`terminal:${location.id}`);
+      const saved = await SecureStore.getItem(`terminal:${location.id}`);
       setTerminals(list);
       setSelectedId(list.find((t) => t.id === saved)?.id ?? (list.length === 1 ? list[0]!.id : null));
     })();
@@ -30,17 +32,18 @@ export function useTerminal() {
 
   const select = async (id: string) => {
     setSelectedId(id);
-    await SecureStore.setItemAsync(`terminal:${location.id}`, id);
+    await SecureStore.setItem(`terminal:${location.id}`, id);
   };
 
   return { terminals, terminal: terminals?.find((t) => t.id === selectedId) ?? null, select };
 }
 
 export function TerminalPicker(props: { terminals: Terminal[]; selectedId?: string; onSelect: (id: string) => void; onClose: () => void }) {
+  const { dialog } = useLayout();
   return (
     <Modal transparent animationType="fade" onRequestClose={props.onClose}>
       <View style={{ flex: 1, backgroundColor: "#000b", justifyContent: "center", alignItems: "center" }}>
-        <View style={[ui.panel, { width: 460, gap: 10 }]}>
+        <View style={[ui.panel, { width: dialog(460), gap: 10 }]}>
           <Text style={ui.h1}>Card terminal for this register</Text>
           {props.terminals.length === 0 && (
             <Text style={ui.muted}>No terminals at this location yet. A manager can import them from Handpoint.</Text>

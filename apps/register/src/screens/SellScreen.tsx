@@ -2,10 +2,13 @@ import { cardAmountDue, cardPrice, dualTotals, formatBps, formatCents, isCardPri
 import * as Crypto from "expo-crypto";
 import * as Print from "expo-print";
 import { useEffect, useMemo, useState } from "react";
-import { Alert, FlatList, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { FlatList, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { api, ApiError, apiText, type Customer, type LoyaltyProgram, type LoyaltyQuote, type Product, type Variant } from "../api";
 import { Button } from "../components/Button";
 import { CustomerPicker } from "../components/CustomerPicker";
+import { NumberPrompt } from "../components/NumberPrompt";
+import { SplitPane } from "../components/SplitPane";
+import { useLayout } from "../layout";
 import { ProductSearch, variantLabel } from "../components/ProductSearch";
 import { RewardsPicker } from "../components/RewardsPicker";
 import { TerminalPicker, useTerminal } from "../components/TerminalPicker";
@@ -32,16 +35,26 @@ export function SellScreen() {
   const [pickingRewards, setPickingRewards] = useState(false);
   const [quote, setQuote] = useState<LoyaltyQuote | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
+  const [discounting, setDiscounting] = useState<Line | null>(null);
+  const [showCart, setShowCart] = useState(false);
+  const [drawerMsg, setDrawerMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    api<LoyaltyProgram>("GET", "/loyalty/program").then(setProgram).catch(() => setProgram(null));
+    api<LoyaltyProgram>("GET", "/loyalty/program")
+      .then(setProgram)
+      .catch(() => setProgram(null));
   }, []);
 
   const bps = location.cardPriceBps;
   const localTotals = useMemo(
     () =>
       dualTotals(
-        lines.map((l) => ({ unitPriceCents: l.variant.priceCents, quantity: l.quantity, discountCents: l.discountCents, taxable: l.variant.taxable })),
+        lines.map((l) => ({
+          unitPriceCents: l.variant.priceCents,
+          quantity: l.quantity,
+          discountCents: l.discountCents,
+          taxable: l.variant.taxable,
+        })),
         location.taxRateBps,
         bps,
       ),
@@ -86,22 +99,20 @@ export function SellScreen() {
     });
   }
 
+  async function noSale() {
+    if (!terminalState.terminal) return setDrawerMsg("Pick this register's terminal first");
+    try {
+      await api("POST", `/terminals/${terminalState.terminal.id}/drawer`);
+      setDrawerMsg("Drawer opened");
+    } catch (e) {
+      setDrawerMsg(e instanceof ApiError ? e.message : String(e));
+    }
+  }
+
   const setQty = (id: string, q: number) =>
     setLines((prev) => (q <= 0 ? prev.filter((l) => l.variant.id !== id) : prev.map((l) => (l.variant.id === id ? { ...l, quantity: q } : l))));
 
-  function discount(line: Line) {
-    Alert.prompt?.(
-      "Line discount",
-      `Dollars off ${line.product.title}`,
-      (v) => {
-        const cents = Math.round(Number(v) * 100);
-        if (Number.isFinite(cents) && cents >= 0) setLines((prev) => prev.map((l) => (l === line ? { ...l, discountCents: cents } : l)));
-      },
-      "plain-text",
-      "",
-      "decimal-pad",
-    );
-  }
+  const discount = (line: Line) => setDiscounting(line);
 
   function reset() {
     setLines([]);
@@ -114,7 +125,12 @@ export function SellScreen() {
   // Mirror the sale to the customer-facing display.
   useEffect(() => {
     if (payState?.done) {
-      publishDisplay(channel, { state: "DONE", storeName: location.name, totalCents: payState.done.totalCents, changeCents: payState.done.changeCents });
+      publishDisplay(channel, {
+        state: "DONE",
+        storeName: location.name,
+        totalCents: payState.done.totalCents,
+        changeCents: payState.done.changeCents,
+      });
       return;
     }
     if (lines.length === 0) {
@@ -136,92 +152,126 @@ export function SellScreen() {
       card: dual.card,
       due: tendering && payState?.due ? payState.due : undefined,
       customer: customer ? { name: customer.name, points: customer.loyalty?.points, rewardsCents: customer.loyalty?.rewardsCents } : null,
-      earn: quote?.earn && quote.earn.amount > 0 ? (quote.earn.unit === "POINTS" ? `${quote.earn.amount.toLocaleString()} points` : `${formatCents(quote.earn.amount)} rewards`) : null,
+      earn:
+        quote?.earn && quote.earn.amount > 0
+          ? quote.earn.unit === "POINTS"
+            ? `${quote.earn.amount.toLocaleString()} points`
+            : `${formatCents(quote.earn.amount)} rewards`
+          : null,
     });
   }, [channel, lines, dual, tendering, payState, customer, quote, bps, location.name]);
 
+  const cartCount = lines.reduce((a, l) => a + l.quantity, 0);
   return (
-    <View style={{ flex: 1, flexDirection: "row", gap: 16, padding: 16 }}>
-      <View style={[ui.panel, { flex: 3 }]}>
-        <ProductSearch onPick={add} />
-      </View>
-
-      <View style={[ui.panel, { flex: 2, gap: 12 }]}>
-        <CustomerPicker
-          customer={customer}
-          onChange={(c) => {
-            setCustomer(c);
-            setRewardIds([]);
-          }}
-        />
-        {loyaltyOn && program!.type === "POINTS" && (
-          <Button
-            title={rewardIds.length ? `${rewardIds.length} reward(s) applied` : "Redeem points"}
-            kind="secondary"
-            onPress={() => setPickingRewards(true)}
-          />
-        )}
-        <FlatList
-          style={{ flex: 1 }}
-          data={lines}
-          keyExtractor={(l) => l.variant.id}
-          ListEmptyComponent={<Text style={[ui.muted, { textAlign: "center", marginTop: 40 }]}>Scan or search to add items</Text>}
-          renderItem={({ item: l }) => (
-            <View style={{ paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-              <View style={[ui.row, { justifyContent: "space-between" }]}>
-                <Text style={[ui.text, { flex: 1 }]} numberOfLines={1}>
-                  {l.product.title}
-                </Text>
-                <Text style={ui.text}>{formatCents(l.variant.priceCents * l.quantity - l.discountCents)}</Text>
-              </View>
-              {bps > 0 && (
-                <Text style={[ui.muted, { textAlign: "right" }]}>
-                  Card {formatCents(cardPrice(l.variant.priceCents, bps) * l.quantity - (l.discountCents ? cardPrice(l.discountCents, bps) : 0))}
+    <View style={{ flex: 1 }}>
+      <SplitPane
+        showRight={showCart}
+        onToggle={setShowCart}
+        rightLabel={`Cart (${cartCount})${cartCount ? ` · ${formatCents(dual.cash.totalCents)}` : ""}`}
+        left={<ProductSearch onPick={add} />}
+        right={
+          <>
+            <CustomerPicker
+              customer={customer}
+              onChange={(c) => {
+                setCustomer(c);
+                setRewardIds([]);
+              }}
+            />
+            {loyaltyOn && program!.type === "POINTS" && (
+              <Button
+                title={rewardIds.length ? `${rewardIds.length} reward(s) applied` : "Redeem points"}
+                kind="secondary"
+                onPress={() => setPickingRewards(true)}
+              />
+            )}
+            <FlatList
+              style={{ flex: 1 }}
+              data={lines}
+              keyExtractor={(l) => l.variant.id}
+              ListEmptyComponent={<Text style={[ui.muted, { textAlign: "center", marginTop: 40 }]}>Scan or search to add items</Text>}
+              renderItem={({ item: l }) => (
+                <View style={{ paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+                  <View style={[ui.row, { justifyContent: "space-between" }]}>
+                    <Text style={[ui.text, { flex: 1 }]} numberOfLines={1}>
+                      {l.product.title}
+                    </Text>
+                    <Text style={ui.text}>{formatCents(l.variant.priceCents * l.quantity - l.discountCents)}</Text>
+                  </View>
+                  {bps > 0 && (
+                    <Text style={[ui.muted, { textAlign: "right" }]}>
+                      Card {formatCents(cardPrice(l.variant.priceCents, bps) * l.quantity - (l.discountCents ? cardPrice(l.discountCents, bps) : 0))}
+                    </Text>
+                  )}
+                  <Text style={ui.muted}>{variantLabel(l.variant)}</Text>
+                  <View style={[ui.row, { gap: 8, marginTop: 6 }]}>
+                    <Button
+                      title="−"
+                      kind="secondary"
+                      onPress={() => setQty(l.variant.id, l.quantity - 1)}
+                      style={{ minHeight: 36, paddingVertical: 6 }}
+                    />
+                    <Text style={ui.text}>{l.quantity}</Text>
+                    <Button
+                      title="+"
+                      kind="secondary"
+                      disabled={l.variant.serialized}
+                      onPress={() => setQty(l.variant.id, l.quantity + 1)}
+                      style={{ minHeight: 36, paddingVertical: 6 }}
+                    />
+                    <Pressable onPress={() => discount(l)}>
+                      <Text style={[ui.muted, { marginLeft: 8 }]}>{l.discountCents ? `−${formatCents(l.discountCents)}` : "Discount"}</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              )}
+            />
+            <View style={{ gap: 4 }}>
+              <Row label="Subtotal" value={totals.subtotalCents} />
+              {totals.discountCents > 0 && <Row label={rewardIds.length ? "Discounts & rewards" : "Discounts"} value={-totals.discountCents} />}
+              <Row label={`Tax (${(location.taxRateBps / 100).toFixed(2)}%)`} value={totals.taxCents} />
+              {bps > 0 ? (
+                <>
+                  <Row label="Cash price" value={dual.cash.totalCents} big />
+                  <Row label={`Card price (+${formatBps(bps)})`} value={dual.card.totalCents} big />
+                </>
+              ) : (
+                <Row label="Total" value={totals.totalCents} big />
+              )}
+              {quote?.earn && quote.earn.amount > 0 && (
+                <Text style={[ui.muted, { color: colors.good }]}>
+                  Earns {quote.earn.unit === "POINTS" ? `${quote.earn.amount.toLocaleString()} pts` : `${formatCents(quote.earn.amount)} rewards`}
                 </Text>
               )}
-              <Text style={ui.muted}>{variantLabel(l.variant)}</Text>
-              <View style={[ui.row, { gap: 8, marginTop: 6 }]}>
-                <Button title="−" kind="secondary" onPress={() => setQty(l.variant.id, l.quantity - 1)} style={{ minHeight: 36, paddingVertical: 6 }} />
-                <Text style={ui.text}>{l.quantity}</Text>
-                <Button
-                  title="+"
-                  kind="secondary"
-                  disabled={l.variant.serialized}
-                  onPress={() => setQty(l.variant.id, l.quantity + 1)}
-                  style={{ minHeight: 36, paddingVertical: 6 }}
-                />
-                <Pressable onPress={() => discount(l)}>
-                  <Text style={[ui.muted, { marginLeft: 8 }]}>{l.discountCents ? `−${formatCents(l.discountCents)}` : "Discount"}</Text>
-                </Pressable>
-              </View>
+              {quoteError && <Text style={ui.error}>{quoteError}</Text>}
             </View>
-          )}
+            <View style={[ui.row, { gap: 8 }]}>
+              <Button title="Clear" kind="secondary" onPress={reset} disabled={!lines.length} />
+              <Button title="Charge" kind="good" onPress={() => setTendering(true)} disabled={!lines.length || !quoteReady} style={{ flex: 1 }} />
+            </View>
+            {isManager(staff) ? (
+              <Pressable onPress={noSale}>
+                <Text style={ui.muted}>No sale (open drawer){drawerMsg ? ` · ${drawerMsg}` : ""}</Text>
+              </Pressable>
+            ) : (
+              <Text style={ui.muted}>Price overrides and refunds need a manager.</Text>
+            )}
+          </>
+        }
+      />
+
+      {discounting && (
+        <NumberPrompt
+          title="Line discount"
+          message={`Dollars off ${discounting.product.title}`}
+          initial={discounting.discountCents ? (discounting.discountCents / 100).toFixed(2) : ""}
+          onSubmit={(n) => {
+            const cents = Math.round(n * 100);
+            setLines((prev) => prev.map((l) => (l.variant.id === discounting.variant.id ? { ...l, discountCents: cents } : l)));
+          }}
+          onClose={() => setDiscounting(null)}
         />
-        <View style={{ gap: 4 }}>
-          <Row label="Subtotal" value={totals.subtotalCents} />
-          {totals.discountCents > 0 && <Row label={rewardIds.length ? "Discounts & rewards" : "Discounts"} value={-totals.discountCents} />}
-          <Row label={`Tax (${(location.taxRateBps / 100).toFixed(2)}%)`} value={totals.taxCents} />
-          {bps > 0 ? (
-            <>
-              <Row label="Cash price" value={dual.cash.totalCents} big />
-              <Row label={`Card price (+${formatBps(bps)})`} value={dual.card.totalCents} big />
-            </>
-          ) : (
-            <Row label="Total" value={totals.totalCents} big />
-          )}
-          {quote?.earn && quote.earn.amount > 0 && (
-            <Text style={[ui.muted, { color: colors.good }]}>
-              Earns {quote.earn.unit === "POINTS" ? `${quote.earn.amount.toLocaleString()} pts` : `${formatCents(quote.earn.amount)} rewards`}
-            </Text>
-          )}
-          {quoteError && <Text style={ui.error}>{quoteError}</Text>}
-        </View>
-        <View style={[ui.row, { gap: 8 }]}>
-          <Button title="Clear" kind="secondary" onPress={reset} disabled={!lines.length} />
-          <Button title="Charge" kind="good" onPress={() => setTendering(true)} disabled={!lines.length || !quoteReady} style={{ flex: 1 }} />
-        </View>
-        {!isManager(staff) && <Text style={ui.muted}>Price overrides and refunds need a manager.</Text>}
-      </View>
+      )}
 
       {pickingRewards && customer && (
         <RewardsPicker points={customer.loyalty?.points ?? 0} selected={rewardIds} onChange={setRewardIds} onClose={() => setPickingRewards(false)} />
@@ -280,6 +330,7 @@ function TenderSheet(props: {
   // double-charged. A new key is only minted after a definite failure.
   const [idempotencyKey, setIdempotencyKey] = useState(() => Crypto.randomUUID());
   const { terminals, terminal, select } = props.terminalState;
+  const { dialog } = useLayout();
   const [pickingTerminal, setPickingTerminal] = useState(false);
   const [waitingOnCard, setWaitingOnCard] = useState(false);
   const [tenders, setTenders] = useState<TenderInput[]>([]);
@@ -342,6 +393,12 @@ function TenderSheet(props: {
           const r = await props.submit(tenders, idempotencyKey);
           setReceipt({ id: r.order.id, number: r.order.number, changeCents: r.changeCents });
           props.onState({ done: { totalCents: r.order.totalCents + r.order.cardAdjustmentCents, changeCents: r.changeCents } });
+          // Cash sales: print the receipt and pop the drawer for change.
+          if (terminal?.receiptPrinterHost && tenders.some((t) => t.type === "CASH")) {
+            api("POST", `/orders/${r.order.id}/receipt/print`, { terminalId: terminal.id, target: "printer", openDrawer: true })
+              .then(() => setPrintMsg("Receipt printed · drawer open"))
+              .catch((e) => setPrintMsg(e instanceof ApiError ? `Printer: ${e.message}` : String(e)));
+          }
           return;
         } catch (e) {
           if (e instanceof ApiError && e.code === "SALE_IN_PROGRESS" && attempt < 80) {
@@ -365,39 +422,42 @@ function TenderSheet(props: {
   return (
     <Modal transparent animationType="fade" onRequestClose={props.onCancel}>
       <View style={{ flex: 1, backgroundColor: "#000b", justifyContent: "center", alignItems: "center" }}>
-        <ScrollView style={[ui.panel, { width: 560, maxHeight: "90%" }]} contentContainerStyle={{ gap: 12 }}>
+        <ScrollView style={[ui.panel, { width: dialog(560), maxHeight: "90%", flexGrow: 0 }]} contentContainerStyle={{ gap: 12 }}>
           {receipt ? (
             <>
               <Text style={ui.h1}>Sale #{receipt.number} complete</Text>
-              {receipt.changeCents > 0 && <Text style={[ui.h1, { color: colors.good, fontSize: 40 }]}>Change {formatCents(receipt.changeCents)}</Text>}
+              {receipt.changeCents > 0 && (
+                <Text style={[ui.h1, { color: colors.good, fontSize: 40 }]}>Change {formatCents(receipt.changeCents)}</Text>
+              )}
               <View style={[ui.row, { gap: 8 }]}>
-                <Button
-                  title="Print receipt"
-                  kind="secondary"
-                  style={{ flex: 1 }}
-                  onPress={async () => {
-                    try {
-                      await Print.printAsync({ html: await apiText("GET", `/orders/${receipt.id}/receipt?format=html`) });
-                    } catch (e) {
-                      setPrintMsg(e instanceof Error ? e.message : String(e));
-                    }
-                  }}
-                />
                 {terminal && (
                   <Button
-                    title="Print on terminal"
+                    title={terminal.receiptPrinterHost ? "Print receipt" : "Print on terminal"}
                     kind="secondary"
                     style={{ flex: 1 }}
                     onPress={async () => {
                       try {
-                        await api("POST", `/orders/${receipt.id}/receipt/print`, { terminalId: terminal.id });
-                        setPrintMsg("Printing on the terminal");
+                        const r = await api<{ on: string }>("POST", `/orders/${receipt.id}/receipt/print`, { terminalId: terminal.id });
+                        setPrintMsg(r.on === "printer" ? "Printing" : "Printing on the terminal");
                       } catch (e) {
                         setPrintMsg(e instanceof ApiError ? e.message : String(e));
                       }
                     }}
                   />
                 )}
+                <Button
+                  title={terminal ? "Other printer…" : "Print receipt"}
+                  kind="secondary"
+                  style={{ flex: 1 }}
+                  onPress={async () => {
+                    try {
+                      // System print dialog: AirPrint on iPad, Android's print service on Android.
+                      await Print.printAsync({ html: await apiText("GET", `/orders/${receipt.id}/receipt?format=html`) });
+                    } catch (e) {
+                      setPrintMsg(e instanceof Error ? e.message : String(e));
+                    }
+                  }}
+                />
               </View>
               {printMsg && <Text style={ui.muted}>{printMsg}</Text>}
               <Button title="New sale" kind="good" onPress={props.onDone} />
@@ -405,7 +465,11 @@ function TenderSheet(props: {
           ) : (
             <>
               <Text style={ui.h1}>
-                {ready ? "Ready to complete" : props.bps > 0 ? `Due ${formatCents(cashDue)} cash · ${formatCents(cardDue)} card` : `Due ${formatCents(cashDue)}`}
+                {ready
+                  ? "Ready to complete"
+                  : props.bps > 0
+                    ? `Due ${formatCents(cashDue)} cash · ${formatCents(cardDue)} card`
+                    : `Due ${formatCents(cashDue)}`}
               </Text>
               {tenders.map((t, i) => (
                 <View key={i} style={[ui.row, { justifyContent: "space-between" }]}>
@@ -423,9 +487,11 @@ function TenderSheet(props: {
                   <Text style={ui.muted}>Cash</Text>
                   <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
                     <Button title="Exact" kind="secondary" onPress={() => addCash(due)} />
-                    {[2000, 5000, 10000].filter((d) => d >= due).map((d) => (
-                      <Button key={d} title={formatCents(d)} kind="secondary" onPress={() => addCash(d)} />
-                    ))}
+                    {[2000, 5000, 10000]
+                      .filter((d) => d >= due)
+                      .map((d) => (
+                        <Button key={d} title={formatCents(d)} kind="secondary" onPress={() => addCash(d)} />
+                      ))}
                     <TextInput
                       style={[ui.input, { width: 120 }]}
                       placeholder="Other"
@@ -448,7 +514,9 @@ function TenderSheet(props: {
                 </>
               )}
               {waitingOnCard && (
-                <Text style={[ui.h2, { color: colors.accent, textAlign: "center" }]}>Tap, insert, or swipe on {terminal?.name ?? "the terminal"}</Text>
+                <Text style={[ui.h2, { color: colors.accent, textAlign: "center" }]}>
+                  Tap, insert, or swipe on {terminal?.name ?? "the terminal"}
+                </Text>
               )}
               {error && <Text style={ui.error}>{error}</Text>}
               <Pressable onPress={() => setPickingTerminal(true)} disabled={busy}>

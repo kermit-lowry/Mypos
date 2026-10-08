@@ -4,6 +4,7 @@ import { FlatList, Pressable, ScrollView, Switch, Text, TextInput, View } from "
 import { api, ApiError, type Product, type Variant } from "../api";
 import { Button } from "../components/Button";
 import { ProductSearch, variantLabel } from "../components/ProductSearch";
+import { useLayout } from "../layout";
 import { colors, ui } from "../theme";
 
 interface Program {
@@ -38,6 +39,7 @@ const KIND_LABELS: Record<ProductKind, string> = {
 
 /** Owner-only: choose cashback vs points, set earn rates, and manage the rewards menu. */
 export function LoyaltySettingsScreen() {
+  const { compact } = useLayout();
   const [program, setProgram] = useState<Program | null>(null);
   const [rewards, setRewards] = useState<RewardRow[]>([]);
   const [message, setMessage] = useState<string | null>(null);
@@ -63,7 +65,7 @@ export function LoyaltySettingsScreen() {
   const set = (patch: Partial<Program>) => setProgram({ ...program, ...patch });
 
   return (
-    <View style={{ flex: 1, flexDirection: "row", gap: 16, padding: 16 }}>
+    <View style={{ flex: 1, flexDirection: compact ? "column" : "row", gap: compact ? 8 : 16, padding: compact ? 8 : 16 }}>
       <ScrollView style={[ui.panel, { flex: 1 }]} contentContainerStyle={{ gap: 14 }}>
         <View style={[ui.row, { justifyContent: "space-between" }]}>
           <Text style={ui.h1}>Loyalty program</Text>

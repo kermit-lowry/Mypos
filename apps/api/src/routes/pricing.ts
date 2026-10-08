@@ -5,6 +5,7 @@ import { parse, requireRole } from "../http.js";
 import type { Ctx } from "../services/context.js";
 import { resolveTerminal } from "../services/charges.js";
 import { labelData, labelsHtml, labelsZpl, sendToPrinter } from "../services/labels.js";
+import { drawerKickBytes, receiptEscPos } from "../services/escpos.js";
 import { buildReceipt, receiptHtml, receiptTerminalHtml, receiptText } from "../services/receipts.js";
 
 /** Store settings, receipts, price labels, and the customer-facing display. */
@@ -45,16 +46,43 @@ export function pricingRoutes(app: FastifyInstance, base: Ctx) {
     return r;
   });
 
-  /** Print the receipt on the PAX terminal's built-in printer. */
+  /**
+   * Print a receipt at a register: on its ESC/POS receipt printer if it has
+   * one, else on the PAX terminal's built-in printer. `openDrawer` also pops
+   * the cash drawer plugged into the receipt printer (cash sales).
+   */
   app.post("/orders/:id/receipt/print", staff, async (req) => {
     const { id } = req.params as { id: string };
-    const { terminalId } = parse(z.object({ terminalId: z.string() }), req.body);
+    const { terminalId, target, openDrawer } = parse(
+      z.object({ terminalId: z.string(), target: z.enum(["auto", "printer", "terminal"]).default("auto"), openDrawer: z.boolean().default(false) }),
+      req.body,
+    );
     const order = await prisma.order.findUniqueOrThrow({ where: { id } });
     const terminal = await resolveTerminal(prisma, terminalId, order.locationId);
+    const { receiptPrinterHost } = await prisma.terminal.findUniqueOrThrow({ where: { id: terminal.id } });
+    const receipt = await buildReceipt(prisma, id);
+
+    const usePrinter = target === "printer" || (target === "auto" && !!receiptPrinterHost);
+    if (usePrinter) {
+      if (!receiptPrinterHost) throw badRequest("NO_PRINTER", "No receipt printer set up for this register");
+      await sendToPrinter(receiptPrinterHost, receiptEscPos(receipt, { openDrawer }));
+      return { printed: true, on: "printer" };
+    }
+    if (openDrawer) throw badRequest("NO_DRAWER", "Cash drawers open through a receipt printer; none is set up for this register");
     if (!gateway.printReceipt) throw badRequest("NO_PRINTER", "This terminal can't print");
-    const r = await gateway.printReceipt(receiptTerminalHtml(await buildReceipt(prisma, id)), terminal);
+    const r = await gateway.printReceipt(receiptTerminalHtml(receipt), terminal);
     if (!r.approved) throw badRequest("PRINT_FAILED", r.message ?? "The terminal couldn't print");
-    return { printed: true };
+    return { printed: true, on: "terminal" };
+  });
+
+  /** "No sale": open the register's cash drawer. Managers only, and logged. */
+  app.post("/terminals/:id/drawer", { preHandler: requireRole("MANAGER") }, async (req) => {
+    const { id } = req.params as { id: string };
+    const t = await prisma.terminal.findUniqueOrThrow({ where: { id } });
+    if (!t.receiptPrinterHost) throw badRequest("NO_DRAWER", "No receipt printer (and drawer) set up for this register");
+    await sendToPrinter(t.receiptPrinterHost, drawerKickBytes());
+    req.log.info({ terminalId: id, staff: (req.user as { sub?: string } | undefined)?.sub }, "cash drawer opened (no sale)");
+    return { opened: true };
   });
 
   // ── Price labels ───────────────────────────────────────────

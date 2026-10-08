@@ -2,6 +2,7 @@ import { formatCents } from "@mypos/shared";
 import { useState } from "react";
 import { FlatList, Modal, Pressable, Text, TextInput, View } from "react-native";
 import { api, ApiError, type Customer } from "../api";
+import { useLayout } from "../layout";
 import { colors, ui } from "../theme";
 import { Button } from "./Button";
 
@@ -10,6 +11,7 @@ export function CustomerPicker({ customer, onChange }: { customer: Customer | nu
   const [q, setQ] = useState("");
   const [results, setResults] = useState<Customer[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const { compact } = useLayout();
 
   async function pick(c: Customer) {
     // Re-fetch for the live store-credit balance.
@@ -43,7 +45,7 @@ export function CustomerPicker({ customer, onChange }: { customer: Customer | nu
         )}
       </Pressable>
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-        <View style={{ flex: 1, backgroundColor: "#000a", justifyContent: "center", padding: 80 }}>
+        <View style={{ flex: 1, backgroundColor: "#000a", justifyContent: "center", padding: compact ? 12 : 80 }}>
           <View style={[ui.panel, { maxHeight: "90%" }]}>
             <Text style={ui.h1}>Customer</Text>
             <TextInput

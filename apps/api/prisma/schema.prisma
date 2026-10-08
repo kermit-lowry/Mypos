@@ -67,6 +67,9 @@ model Terminal {
   /// Device model (Handpoint: terminal_type, e.g. PAXA920PRO).
   model      String?
   active     Boolean  @default(true)
+  /// ESC/POS receipt printer at this register, "host" or "host:port" (raw TCP 9100).
+  /// A cash drawer plugged into the printer opens through it.
+  receiptPrinterHost String?
   createdAt  DateTime @default(now())
 }
 

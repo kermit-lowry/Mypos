@@ -110,10 +110,10 @@ h1{font-size:9pt;line-height:1.1;margin:0;max-height:2.2em;overflow:hidden}p{fon
 </style></head><body>${pages.join("")}</body></html>`;
 }
 
-/** Send ZPL to a network Zebra printer (raw TCP, port 9100 by default). */
-export function sendToPrinter(hostPort: string, zpl: string, timeoutMs = 5_000): Promise<void> {
+/** Send raw bytes (ZPL, ESC/POS) to a network printer over raw TCP, port 9100 by default. */
+export function sendToPrinter(hostPort: string, data: string | Buffer, timeoutMs = 5_000): Promise<void> {
   const [host, port] = hostPort.split(":");
-  if (!host) throw badRequest("PRINTER", "No label printer configured for this location");
+  if (!host) throw badRequest("PRINTER", "No printer configured");
   return new Promise((resolve, reject) => {
     const socket = new Socket();
     socket.setTimeout(timeoutMs);
@@ -122,6 +122,6 @@ export function sendToPrinter(hostPort: string, zpl: string, timeoutMs = 5_000):
       reject(badRequest("PRINTER_UNREACHABLE", `Label printer at ${hostPort} didn't respond`));
     });
     socket.once("error", (e) => reject(badRequest("PRINTER_UNREACHABLE", `Label printer at ${hostPort}: ${e.message}`)));
-    socket.connect(Number(port ?? 9100), host, () => socket.end(zpl, () => resolve()));
+    socket.connect(Number(port ?? 9100), host, () => socket.end(data, () => resolve()));
   });
 }

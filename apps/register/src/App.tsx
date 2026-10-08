@@ -1,6 +1,7 @@
 import { StatusBar } from "expo-status-bar";
+import { useKeepAwake } from "expo-keep-awake";
 import { useEffect, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { BackHandler, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { loadSession, setToken, type Location } from "./api";
 import { BuylistScreen } from "./screens/BuylistScreen";
@@ -11,6 +12,7 @@ import { LoginScreen } from "./screens/LoginScreen";
 import { LoyaltySettingsScreen } from "./screens/LoyaltySettingsScreen";
 import { SellScreen } from "./screens/SellScreen";
 import { StoreSettingsScreen } from "./screens/StoreSettingsScreen";
+import { useLayout } from "./layout";
 import { SessionContext, type Session, type Staff } from "./session";
 import { colors, ui } from "./theme";
 
@@ -23,6 +25,20 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [session, setSession] = useState<Omit<Session, "signOut"> | null>(null);
   const [tab, setTab] = useState<Tab>("Sell");
+  const { narrow } = useLayout();
+  // Registers and customer displays shouldn't dim or lock mid-sale.
+  useKeepAwake();
+
+  // Android back button: return to Sell from other tabs; never leave the app
+  // from a register, and never exit the customer display by accident.
+  useEffect(() => {
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (!session) return false;
+      if (tab !== "Sell" && tab !== "Display") setTab("Sell");
+      return true;
+    });
+    return () => sub.remove();
+  }, [tab, session]);
 
   useEffect(() => {
     // Staff sign in each shift; we only remember the server URL.
@@ -70,20 +86,23 @@ export default function App() {
       <StatusBar style="light" />
       <SessionContext.Provider value={value}>
         <SafeAreaView style={ui.screen}>
-          <View style={[ui.row, { paddingHorizontal: 16, paddingTop: 8, gap: 8 }]}>
-            {visible.map((t) => (
-              <Pressable
-                key={t}
-                onPress={() => setTab(t)}
-                style={{ paddingVertical: 10, paddingHorizontal: 18, borderRadius: 8, backgroundColor: tab === t ? colors.accent : colors.panel }}
-              >
-                <Text style={[ui.text, { fontWeight: "600" }]}>{t}</Text>
-              </Pressable>
-            ))}
-            <View style={{ flex: 1 }} />
-            <Text style={ui.muted}>
-              {session.staff.name} · {session.location.name}
-            </Text>
+          <View style={[ui.row, { paddingHorizontal: narrow ? 8 : 16, paddingTop: 8, gap: 8 }]}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ gap: 8 }}>
+              {visible.map((t) => (
+                <Pressable
+                  key={t}
+                  onPress={() => setTab(t)}
+                  style={{ paddingVertical: 10, paddingHorizontal: 18, borderRadius: 8, backgroundColor: tab === t ? colors.accent : colors.panel }}
+                >
+                  <Text style={[ui.text, { fontWeight: "600" }]}>{t}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+            {!narrow && (
+              <Text style={ui.muted}>
+                {session.staff.name} · {session.location.name}
+              </Text>
+            )}
             <Pressable onPress={signOut} style={{ padding: 10 }}>
               <Text style={{ color: colors.accent }}>Sign out</Text>
             </Pressable>

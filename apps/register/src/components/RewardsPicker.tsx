@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { FlatList, Modal, Pressable, Text, View } from "react-native";
 import { api, type Reward } from "../api";
+import { useLayout } from "../layout";
 import { colors, ui } from "../theme";
 import { Button } from "./Button";
 
 /** Pick points rewards to redeem on this sale. Rewards the customer can't afford are disabled. */
 export function RewardsPicker(props: { points: number; selected: string[]; onChange: (ids: string[]) => void; onClose: () => void }) {
   const [rewards, setRewards] = useState<Reward[]>([]);
+  const { dialog } = useLayout();
   useEffect(() => {
     api<Reward[]>("GET", "/loyalty/rewards").then(setRewards);
   }, []);
@@ -17,7 +19,7 @@ export function RewardsPicker(props: { points: number; selected: string[]; onCha
   return (
     <Modal transparent animationType="fade" onRequestClose={props.onClose}>
       <View style={{ flex: 1, backgroundColor: "#000b", justifyContent: "center", alignItems: "center" }}>
-        <View style={[ui.panel, { width: 520, maxHeight: "85%", gap: 12 }]}>
+        <View style={[ui.panel, { width: dialog(520), maxHeight: "85%", gap: 12 }]}>
           <Text style={ui.h1}>Redeem rewards</Text>
           <Text style={ui.muted}>{left.toLocaleString()} points available</Text>
           <FlatList

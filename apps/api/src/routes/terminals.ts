@@ -36,7 +36,15 @@ export function terminalRoutes(app: FastifyInstance, base: Ctx) {
 
   app.patch("/terminals/:id", manager, async (req) => {
     const { id } = req.params as { id: string };
-    const data = parse(z.object({ name: z.string().min(1).optional(), locationId: z.string().optional(), active: z.boolean().optional() }), req.body);
+    const data = parse(
+      z.object({
+        name: z.string().min(1).optional(),
+        locationId: z.string().optional(),
+        active: z.boolean().optional(),
+        receiptPrinterHost: z.string().max(255).nullable().optional(),
+      }),
+      req.body,
+    );
     return prisma.terminal.update({ where: { id }, data });
   });
 

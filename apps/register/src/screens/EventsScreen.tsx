@@ -4,6 +4,7 @@ import { FlatList, Pressable, Text, View } from "react-native";
 import { api } from "../api";
 import { Button } from "../components/Button";
 import { useSession } from "../session";
+import { useLayout } from "../layout";
 import { colors, ui } from "../theme";
 
 interface EventRow {
@@ -26,6 +27,7 @@ interface Roster {
 
 /** Tonight's events, rosters, and check-in. Entries are sold from the Sell tab. */
 export function EventsScreen() {
+  const { compact } = useLayout();
   const { location } = useSession();
   const [events, setEvents] = useState<EventRow[]>([]);
   const [roster, setRoster] = useState<Roster | null>(null);
@@ -38,7 +40,7 @@ export function EventsScreen() {
   const open = async (id: string) => setRoster(await api<Roster>("GET", `/events/${id}`));
 
   return (
-    <View style={{ flex: 1, flexDirection: "row", gap: 16, padding: 16 }}>
+    <View style={{ flex: 1, flexDirection: compact ? "column" : "row", gap: compact ? 8 : 16, padding: compact ? 8 : 16 }}>
       <View style={[ui.panel, { flex: 1 }]}>
         <View style={[ui.row, { justifyContent: "space-between" }]}>
           <Text style={ui.h1}>Events</Text>

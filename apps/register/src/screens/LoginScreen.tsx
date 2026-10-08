@@ -3,6 +3,7 @@ import { Text, TextInput, View } from "react-native";
 import { api, ApiError, getApiUrl, setApiUrl, setToken, type Location } from "../api";
 import { Button } from "../components/Button";
 import type { Staff } from "../session";
+import { useLayout } from "../layout";
 import { colors, ui } from "../theme";
 
 export function LoginScreen({ onSignedIn }: { onSignedIn: (staff: Staff, locations: Location[]) => void }) {
@@ -11,6 +12,7 @@ export function LoginScreen({ onSignedIn }: { onSignedIn: (staff: Staff, locatio
   const [pin, setPin] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { dialog } = useLayout();
 
   async function signIn() {
     setBusy(true);
@@ -30,10 +32,19 @@ export function LoginScreen({ onSignedIn }: { onSignedIn: (staff: Staff, locatio
 
   return (
     <View style={[ui.screen, { alignItems: "center", justifyContent: "center" }]}>
-      <View style={[ui.panel, { width: 420, gap: 12 }]}>
+      <View style={[ui.panel, { width: dialog(420), gap: 12 }]}>
         <Text style={ui.h1}>MyPOS Register</Text>
         <Text style={ui.muted}>Server</Text>
-        <TextInput style={ui.input} value={url} onChangeText={setUrl} autoCapitalize="none" autoCorrect={false} />
+        <TextInput
+          style={ui.input}
+          value={url}
+          onChangeText={setUrl}
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="url"
+          placeholder="https://pos.yourstore.com or http://192.168.1.10:4000"
+          placeholderTextColor={colors.muted}
+        />
         <Text style={ui.muted}>Staff email</Text>
         <TextInput style={ui.input} value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" placeholderTextColor={colors.muted} />
         <Text style={ui.muted}>PIN</Text>

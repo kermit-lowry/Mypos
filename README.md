@@ -6,7 +6,7 @@ TCGplayer, eBay).
 
 ```
 apps/api        Node + Fastify + Prisma/Postgres. All business logic lives here.
-apps/register   Expo / React Native register app for iPad (landscape).
+apps/register   Expo / React Native register app: iPad, Android tablets, and Android POS hardware.
 packages/shared Pricing math, money helpers, and request schemas used by both.
 ```
 
@@ -20,7 +20,7 @@ pnpm --filter @mypos/shared build
 pnpm --filter @mypos/api db:migrate
 pnpm --filter @mypos/api db:seed            # staff: owner@/manager@/cashier@mypos.local, PIN 1234
 pnpm dev:api                                # http://localhost:4000
-pnpm dev:register                           # Expo; open on an iPad or simulator
+pnpm dev:register                           # Expo; open on an iPad, Android device, or simulator
 ```
 
 Tests run against a real Postgres (`mypos_test` by default, override with `TEST_DATABASE_URL`):
@@ -52,6 +52,31 @@ pnpm test
 | **Channels** | Pushes available quantities to Shopify/eBay/TCGplayer and imports their paid orders (idempotent). |
 | **Reports** | Daily totals by tender, by product type (with cost), and buylist payouts. |
 | **Staff** | Email + PIN login, roles CASHIER < MANAGER < OWNER. Price overrides, refunds, buylist payouts and inventory adjustments need a manager. Consignor settlement needs the owner. |
+
+## Hardware
+
+The register runs on **iPad and Android**: tablets, phones, and Android POS
+hardware such as Sunmi, iMin, PAX, and Elo devices. It works in portrait and
+landscape. On small screens (handhelds like the PAX A920 or Sunmi V2) the
+search and cart become two tabs.
+
+| Hardware | How it connects |
+| --- | --- |
+| Card reader | PAX terminal through Handpoint (see Payments). |
+| Barcode scanner | Built-in, USB, or Bluetooth scanners in keyboard mode: scan into the search box; it stays focused for back-to-back scans. On Android, the ⌨ button turns off the on-screen keyboard for devices with a built-in scanner. The camera also scans. |
+| Receipt printer | Network ESC/POS printers (Epson TM, Star in ESC/POS mode, most 80mm/58mm printers), set per register with `PATCH /terminals/:id` (`receiptPrinterHost`). Falls back to the PAX terminal's printer, or the system print dialog (AirPrint / Android print service). |
+| Cash drawer | Plugged into the receipt printer; pops automatically on cash sales. Managers can "No sale" open it. |
+| Label printer | Network Zebra (ZPL) printer, set per location. |
+| Customer display | A second tablet or phone in Display mode (iPad or Android). |
+
+**Android and plain HTTP.** Android blocks `http://` connections by default. If
+the API runs on your store network without HTTPS, build with
+`MYPOS_ALLOW_HTTP=1`. Use HTTPS for anything reachable from the internet.
+
+**Previewing layouts** without a device: `pnpm --filter @mypos/register web` runs
+the register in a browser (react-native-web). Resize the window to see phone,
+handheld, and tablet layouts. Hardware features (camera, secure storage) are
+limited there.
 
 ## Payments
 
@@ -98,5 +123,10 @@ To add a processor, implement `PaymentGateway` (`payments/gateway.ts`) and regis
 - **Shopify and eBay** adapters are written against their current REST APIs
   but haven't been run against live stores.
 - **Web store front end.** The storefront API exists; there's no customer-facing site yet.
-- **Offline mode** for the register, receipt printing, cash drawer, and a back-office web admin.
+- **Offline mode** for the register, and a back-office web admin.
+- **Built-in printers and dual screens on Android POS** (Sunmi, iMin, PAX E-series)
+  need the vendor's native SDK in a custom Expo build; today those devices use
+  network printers and a second device for the customer display.
+- **Not yet run on physical Android hardware.** The Android bundle builds, and
+  layouts were checked in a browser at handheld and tablet sizes.
 - Channel sync runs from `POST /channels/sync`. Run it on a schedule (cron) in production.

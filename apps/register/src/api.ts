@@ -1,4 +1,4 @@
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "./storage";
 
 export class ApiError extends Error {
   constructor(
@@ -15,20 +15,20 @@ let baseUrl = "http://localhost:4000";
 let token: string | null = null;
 
 export async function loadSession(): Promise<{ baseUrl: string; token: string | null }> {
-  baseUrl = (await SecureStore.getItemAsync("apiUrl")) ?? baseUrl;
-  token = await SecureStore.getItemAsync("token");
+  baseUrl = (await SecureStore.getItem("apiUrl")) ?? baseUrl;
+  token = await SecureStore.getItem("token");
   return { baseUrl, token };
 }
 
 export async function setApiUrl(url: string) {
   baseUrl = url.replace(/\/$/, "");
-  await SecureStore.setItemAsync("apiUrl", baseUrl);
+  await SecureStore.setItem("apiUrl", baseUrl);
 }
 
 export async function setToken(t: string | null) {
   token = t;
-  if (t) await SecureStore.setItemAsync("token", t);
-  else await SecureStore.deleteItemAsync("token");
+  if (t) await SecureStore.setItem("token", t);
+  else await SecureStore.deleteItem("token");
 }
 
 export const getApiUrl = () => baseUrl;
