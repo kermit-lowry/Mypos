@@ -497,11 +497,11 @@ export async function updateTask(db: Db, id: string, input: Partial<TaskInput>, 
   return presentTask(task, await todayFor(db, task, now));
 }
 
-/** Deactivate: no new occurrences, today's and future OPEN ones are dropped, completed history stays. */
+/** Deactivate: no new occurrences, every OPEN one (overdue included) is dropped, completed history stays. */
 export async function deactivateTask(db: Db, id: string, byId: string, now = new Date()) {
   const before = await getTask(db, id);
   const task = before.active ? await db.task.update({ where: { id }, data: { active: false }, include: taskInclude }) : before;
-  await dropFutureOpen(db, id, now);
+  await db.taskOccurrence.deleteMany({ where: { taskId: id, status: "OPEN" } });
   await audit(db, { action: "TASK_DELETED", staffId: byId, locationId: task.locationId, details: { taskId: id, title: task.title, recurrence: task.recurrence } });
   return presentTask(task, await todayFor(db, task, now));
 }

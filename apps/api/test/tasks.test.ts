@@ -447,16 +447,19 @@ describe("defining tasks", () => {
     expect((await w.as(w.manager, "POST", "/tasks", { locationId: w.locationId, recurrence: "DAILY", startsOn: today, title: "New", assigneeType: "EMPLOYEE", assigneeId: ids.cashier })).body.error).toBe("ASSIGNEE");
   });
 
-  it("deactivating stops future occurrences and keeps the completed ones", async () => {
-    const t = await mk({ title: "Sweep", startsOn: day(-1) });
+  it("deactivating drops every open occurrence, overdue ones too, and keeps the completed ones", async () => {
+    const t = await mk({ title: "Sweep", startsOn: day(-2) });
     const yesterday = await occ(t.id, day(-1));
     await w.as(w.cashier, "POST", `/tasks/occurrences/${yesterday.id}/complete`);
+    expect((await mine(w.cashier)).overdue.map((o) => o.taskId)).toContain(t.id);
     expect((await w.as(w.cashier, "DELETE", `/tasks/${t.id}`)).status).toBe(403);
     const gone = await w.as(w.manager, "DELETE", `/tasks/${t.id}`);
     expect(gone.status).toBe(200);
     expect(gone.body.task).toMatchObject({ id: t.id, active: false, nextDueOn: null });
     expect((await occurrences(t.id)).map((o) => o.status)).toEqual(["DONE"]);
-    expect((await mine(w.cashier)).today).toEqual([]);
+    const after = await mine(w.cashier);
+    expect(after.today).toEqual([]);
+    expect(after.overdue.map((o) => o.taskId)).not.toContain(t.id);
     expect((await w.as(w.manager, "GET", "/tasks?active=true")).body.tasks).toHaveLength(0);
     expect((await w.as(w.manager, "GET", "/tasks?active=false")).body.tasks).toHaveLength(1);
     expect((await audits("TASK_DELETED"))[0]).toMatchObject({ staffId: ids.manager, details: { taskId: t.id, title: "Sweep" } });
