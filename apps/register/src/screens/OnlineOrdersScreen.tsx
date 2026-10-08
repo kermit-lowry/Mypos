@@ -344,6 +344,9 @@ function OrderDetail({ id, terminalState, onChanged }: { id: string; terminalSta
   const live = useRef(true);
   const pickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pickSeq = useRef(0);
+  /** A tick waiting on its debounce (so a step can send it first) and the last request sent. */
+  const pendingPick = useRef<{ send: () => Promise<void> } | null>(null);
+  const inFlight = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(
     () => () => {
@@ -374,6 +377,10 @@ function OrderDetail({ id, terminalState, onChanged }: { id: string; terminalSta
 
   /** One step of the order. Throws so a sheet can show the error; undefined if the PIN prompt was cancelled. */
   const run = async (step: string, body?: unknown): Promise<OnlineOrder | undefined> => {
+    // A tick that is still waiting on its debounce must land before the step,
+    // or "Mark ready" right after the last tick is refused as not all picked.
+    await flushPick();
+    setNotice(null);
     try {
       const r = await post(step, body);
       if (r) {
@@ -401,12 +408,43 @@ function OrderDetail({ id, terminalState, onChanged }: { id: string; terminalSta
       const r = await run(step, body);
       if (r && done) setNotice(done);
     } catch (e) {
-      if (e instanceof ApiError && e.code === "NOT_ALL_PICKED") setSheet("ready-force");
-      else setError(errorMessage(e));
+      if (e instanceof ApiError && e.code === "NOT_ALL_PICKED") {
+        // Show the server's ticked set before asking whether to force it.
+        await load();
+        setSheet("ready-force");
+      } else setError(errorMessage(e));
     } finally {
       setBusy(null);
     }
   }
+
+  /** Sends the ticked set; shared by the debounce timer and flushPick(). */
+  const sendPick = async (next: Set<string>, seq: number, before: string[]) => {
+    try {
+      const r = await post("pick", { pickedLineIds: [...next] });
+      if (!live.current || seq !== pickSeq.current) return;
+      if (!r) return setPicked(new Set(before));
+      setOrder(r);
+      setPicked(new Set(r.pickedLineIds ?? [...next]));
+      onChanged();
+    } catch (e) {
+      if (!live.current || seq !== pickSeq.current) return;
+      setError(e instanceof ApiError && e.code === "FULFILLMENT_STATE" ? "This order was moved on from another register. It's been refreshed." : errorMessage(e));
+      void load();
+    }
+  };
+
+  /** Send a tick that is still waiting on its debounce, and wait for any tick in flight. */
+  const flushPick = async () => {
+    const waiting = pendingPick.current;
+    if (waiting) {
+      if (pickTimer.current) clearTimeout(pickTimer.current);
+      pickTimer.current = null;
+      pendingPick.current = null;
+      await waiting.send();
+    }
+    await inFlight.current;
+  };
 
   /** Tick a line off: shown at once, sent after a short pause so a run of taps is one request. */
   function toggle(lineId: string) {
@@ -419,20 +457,16 @@ function OrderDetail({ id, terminalState, onChanged }: { id: string; terminalSta
     if (pickTimer.current) clearTimeout(pickTimer.current);
     const seq = ++pickSeq.current;
     const before = order.pickedLineIds ?? [];
-    pickTimer.current = setTimeout(async () => {
+    const send = () => {
+      pendingPick.current = null;
+      const p = sendPick(next, seq, before);
+      inFlight.current = p;
+      return p;
+    };
+    pendingPick.current = { send };
+    pickTimer.current = setTimeout(() => {
       pickTimer.current = null;
-      try {
-        const r = await post("pick", { pickedLineIds: [...next] });
-        if (!live.current || seq !== pickSeq.current) return;
-        if (!r) return setPicked(new Set(before));
-        setOrder(r);
-        setPicked(new Set(r.pickedLineIds ?? [...next]));
-        onChanged();
-      } catch (e) {
-        if (!live.current || seq !== pickSeq.current) return;
-        setError(e instanceof ApiError && e.code === "FULFILLMENT_STATE" ? "This order was moved on from another register. It's been refreshed." : errorMessage(e));
-        void load();
-      }
+      void send();
     }, PICK_DEBOUNCE_MS);
   }
 
