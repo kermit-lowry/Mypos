@@ -12,7 +12,8 @@ import { MarketBadge } from "../components/MarketBadge";
 import { NotPermitted, useAskApproval, useGuard } from "../approval";
 import { SplitPane } from "../components/SplitPane";
 import { useLayout } from "../layout";
-import { ProductSearch, variantLabel } from "../components/ProductSearch";
+import { imageOf, ProductSearch, variantLabel } from "../components/ProductSearch";
+import { Thumb } from "../components/Thumb";
 import { RewardsPicker } from "../components/RewardsPicker";
 import { TerminalPicker, useTerminal } from "../components/TerminalPicker";
 import { displayChannel, publishDisplay } from "../display";
@@ -153,7 +154,12 @@ export function SellScreen() {
       if (!line) return;
       if (q < line.quantity) {
         const ok = await guard("LINE_VOID", (t) =>
-          api("POST", "/audit/cart", { action: "LINE_VOID", locationId: location.id, items: itemsFor([{ line, quantity: line.quantity - q }]) }, { approvalToken: t }),
+          api(
+            "POST",
+            "/audit/cart",
+            { action: "LINE_VOID", locationId: location.id, items: itemsFor([{ line, quantity: line.quantity - q }]) },
+            { approvalToken: t },
+          ),
         );
         if (!ok) return;
       }
@@ -180,7 +186,14 @@ export function SellScreen() {
     setLines((prev) =>
       prev.map((l) =>
         byId.has(l.variant.id)
-          ? { ...l, discountCents: byId.get(l.variant.id)!, discountPresetId: d.presetId, discountReasonId: d.reasonId, discountReason: d.reasonName, discountNote: d.note }
+          ? {
+              ...l,
+              discountCents: byId.get(l.variant.id)!,
+              discountPresetId: d.presetId,
+              discountReasonId: d.reasonId,
+              discountReason: d.reasonName,
+              discountNote: d.note,
+            }
           : l,
       ),
     );
@@ -189,7 +202,9 @@ export function SellScreen() {
   const removeDiscount = (target: Line) =>
     setLines((prev) =>
       prev.map((l) =>
-        l.variant.id === target.variant.id ? { ...l, discountCents: 0, discountPresetId: undefined, discountReasonId: undefined, discountReason: undefined, discountNote: undefined } : l,
+        l.variant.id === target.variant.id
+          ? { ...l, discountCents: 0, discountPresetId: undefined, discountReasonId: undefined, discountReason: undefined, discountNote: undefined }
+          : l,
       ),
     );
 
@@ -197,7 +212,12 @@ export function SellScreen() {
   const clearCart = () =>
     guarded(async () => {
       const ok = await guard("CART_CLEAR", (t) =>
-        api("POST", "/audit/cart", { action: "CART_CLEAR", locationId: location.id, items: itemsFor(lines.map((line) => ({ line, quantity: line.quantity }))) }, { approvalToken: t }),
+        api(
+          "POST",
+          "/audit/cart",
+          { action: "CART_CLEAR", locationId: location.id, items: itemsFor(lines.map((line) => ({ line, quantity: line.quantity }))) },
+          { approvalToken: t },
+        ),
       );
       if (ok) reset();
     });
@@ -233,6 +253,7 @@ export function SellScreen() {
       lines: lines.map((l, i) => ({
         title: l.product.title,
         detail: variantLabel(l.variant),
+        imageUrl: imageOf(l.product, l.variant),
         market: l.variant.market?.marketCents != null ? l.variant.market : null,
         quantity: l.quantity,
         cashCents: l.variant.priceCents * l.quantity - lineDiscount(i),
@@ -282,62 +303,70 @@ export function SellScreen() {
               keyExtractor={(l) => l.variant.id}
               ListEmptyComponent={<Text style={[ui.muted, { textAlign: "center", marginTop: 40 }]}>Scan or search to add items</Text>}
               renderItem={({ item: l, index }) => (
-                <View style={{ paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-                  <View style={[ui.row, { justifyContent: "space-between" }]}>
-                    <Text style={[ui.text, { flex: 1 }]} numberOfLines={1}>
-                      {l.product.title}
-                    </Text>
-                    <Text style={ui.text}>{formatCents(l.variant.priceCents * l.quantity - lineDiscount(index))}</Text>
-                  </View>
-                  {bps > 0 && (
-                    <Text style={[ui.muted, { textAlign: "right" }]}>
-                      Card {formatCents(cardPrice(l.variant.priceCents, bps) * l.quantity - (lineDiscount(index) ? cardPrice(lineDiscount(index), bps) : 0))}
-                    </Text>
-                  )}
-                  {!!fresh?.lines[index]?.promoDiscountCents && (
-                    <Text style={[ui.muted, { color: colors.good, textAlign: "right" }]}>Deal −{formatCents(fresh.lines[index]!.promoDiscountCents)}</Text>
-                  )}
-                  <Text style={ui.muted}>{variantLabel(l.variant)}</Text>
-                  <MarketBadge market={l.variant.market} />
-                  <View style={[ui.row, { gap: 8, marginTop: 6 }]}>
-                    <Button
-                      title="−"
-                      kind="secondary"
-                      onPress={() => setQty(l.variant.id, l.quantity - 1)}
-                      style={{ minHeight: 36, paddingVertical: 6 }}
-                    />
-                    <Text style={ui.text}>{l.quantity}</Text>
-                    <Button
-                      title="+"
-                      kind="secondary"
-                      disabled={l.variant.serialized}
-                      onPress={() => setQty(l.variant.id, l.quantity + 1)}
-                      style={{ minHeight: 36, paddingVertical: 6 }}
-                    />
-                    {can("DISCOUNT_LINE") !== "DENY" && (
-                      <Pressable onPress={() => discount(l)}>
-                        <Text style={[ui.muted, { marginLeft: 8 }]}>{l.discountCents ? `−${formatCents(l.discountCents)}` : "Discount"}</Text>
-                      </Pressable>
+                <View style={{ paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border, flexDirection: "row", gap: 10 }}>
+                  <Thumb uri={imageOf(l.product, l.variant)} title={l.product.title} />
+                  <View style={{ flex: 1 }}>
+                    <View style={[ui.row, { justifyContent: "space-between" }]}>
+                      <Text style={[ui.text, { flex: 1 }]} numberOfLines={1}>
+                        {l.product.title}
+                      </Text>
+                      <Text style={ui.text}>{formatCents(l.variant.priceCents * l.quantity - lineDiscount(index))}</Text>
+                    </View>
+                    {bps > 0 && (
+                      <Text style={[ui.muted, { textAlign: "right" }]}>
+                        Card{" "}
+                        {formatCents(
+                          cardPrice(l.variant.priceCents, bps) * l.quantity - (lineDiscount(index) ? cardPrice(lineDiscount(index), bps) : 0),
+                        )}
+                      </Text>
+                    )}
+                    {!!fresh?.lines[index]?.promoDiscountCents && (
+                      <Text style={[ui.muted, { color: colors.good, textAlign: "right" }]}>
+                        Deal −{formatCents(fresh.lines[index]!.promoDiscountCents)}
+                      </Text>
+                    )}
+                    <Text style={ui.muted}>{variantLabel(l.variant)}</Text>
+                    <MarketBadge market={l.variant.market} />
+                    <View style={[ui.row, { gap: 8, marginTop: 6 }]}>
+                      <Button
+                        title="−"
+                        kind="secondary"
+                        onPress={() => setQty(l.variant.id, l.quantity - 1)}
+                        style={{ minHeight: 36, paddingVertical: 6 }}
+                      />
+                      <Text style={ui.text}>{l.quantity}</Text>
+                      <Button
+                        title="+"
+                        kind="secondary"
+                        disabled={l.variant.serialized}
+                        onPress={() => setQty(l.variant.id, l.quantity + 1)}
+                        style={{ minHeight: 36, paddingVertical: 6 }}
+                      />
+                      {can("DISCOUNT_LINE") !== "DENY" && (
+                        <Pressable onPress={() => discount(l)}>
+                          <Text style={[ui.muted, { marginLeft: 8 }]}>{l.discountCents ? `−${formatCents(l.discountCents)}` : "Discount"}</Text>
+                        </Pressable>
+                      )}
+                    </View>
+                    {!!l.discountReason && (
+                      <Text style={ui.muted}>
+                        {l.discountReason}
+                        {l.discountNote ? `: ${l.discountNote}` : ""}
+                      </Text>
                     )}
                   </View>
-                  {!!l.discountReason && (
-                    <Text style={ui.muted}>
-                      {l.discountReason}
-                      {l.discountNote ? `: ${l.discountNote}` : ""}
-                    </Text>
-                  )}
                 </View>
               )}
             />
             <View style={{ gap: 4 }}>
               <Row label="Subtotal" value={totals.subtotalCents} />
               {totals.discountCents > 0 && <Row label={rewardIds.length ? "Discounts & rewards" : "Discounts"} value={-totals.discountCents} />}
-          {fresh?.promotions.map((p) => (
-            <View key={p.promotionId} style={[ui.row, { justifyContent: "space-between" }]}>
-              <Text style={[ui.muted, { color: colors.good }]}>  {p.name}</Text>
-              <Text style={[ui.muted, { color: colors.good }]}>−{formatCents(p.discountCents)}</Text>
-            </View>
-          ))}
+              {fresh?.promotions.map((p) => (
+                <View key={p.promotionId} style={[ui.row, { justifyContent: "space-between" }]}>
+                  <Text style={[ui.muted, { color: colors.good }]}> {p.name}</Text>
+                  <Text style={[ui.muted, { color: colors.good }]}>−{formatCents(p.discountCents)}</Text>
+                </View>
+              ))}
               <Row label={`Tax (${(location.taxRateBps / 100).toFixed(2)}%)`} value={totals.taxCents} />
               {bps > 0 ? (
                 <>
@@ -649,12 +678,24 @@ function TenderSheet(props: {
                   <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
                     <Button title={`Card ${formatCents(cardRemaining)}`} onPress={addCard} style={{ flexGrow: 1 }} />
                     {dueFor("CHECK") > 0 && <Button title="Check" kind="secondary" onPress={() => setPrompt("CHECK")} style={{ flexGrow: 1 }} />}
-                    {dueFor("GIFT_CARD") > 0 && <Button title="Gift card" kind="secondary" onPress={() => setPrompt("GIFT_CARD")} style={{ flexGrow: 1 }} />}
+                    {dueFor("GIFT_CARD") > 0 && (
+                      <Button title="Gift card" kind="secondary" onPress={() => setPrompt("GIFT_CARD")} style={{ flexGrow: 1 }} />
+                    )}
                     {credit - creditUsed > 0 && dueFor("STORE_CREDIT") > 0 && (
-                      <Button title={`Store credit (${formatCents(credit - creditUsed)})`} kind="secondary" onPress={addCredit} style={{ flexGrow: 1 }} />
+                      <Button
+                        title={`Store credit (${formatCents(credit - creditUsed)})`}
+                        kind="secondary"
+                        onPress={addCredit}
+                        style={{ flexGrow: 1 }}
+                      />
                     )}
                     {rewards - rewardsUsed > 0 && dueFor("LOYALTY") > 0 && (
-                      <Button title={`Rewards (${formatCents(rewards - rewardsUsed)})`} kind="secondary" onPress={addRewards} style={{ flexGrow: 1 }} />
+                      <Button
+                        title={`Rewards (${formatCents(rewards - rewardsUsed)})`}
+                        kind="secondary"
+                        onPress={addRewards}
+                        style={{ flexGrow: 1 }}
+                      />
                     )}
                   </View>
                   {hasCard && props.bps > 0 && <Text style={ui.muted}>The rest is at the card price. Remove card-priced payments to take cash.</Text>}

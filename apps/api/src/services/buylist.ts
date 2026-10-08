@@ -1,31 +1,103 @@
-import { buylistOffer, DEFAULT_BUYLIST_RULE, type BuylistAcceptInput, type BuylistQuoteInput, type BuylistRule } from "@mypos/shared";
+import type { BuylistPolicy, Prisma } from "@prisma/client";
+import { DEFAULT_BUYLIST_POLICY, suggestOffer, type BuylistAcceptInput, type BuylistLineInput, type BuylistPolicyRule, type BuylistQuoteInput, type OfferSuggestion } from "@mypos/shared";
+import type { Db } from "../db.js";
 import { badRequest, conflict, notFound } from "../errors.js";
+import { marketTrends } from "../pricing/trends.js";
 import { describeVariant } from "./checkout.js";
 import type { Ctx } from "./context.js";
 import { moveInventory, receiveCost } from "./inventory.js";
+import { categoryLineage } from "./promotions.js";
 import { postCredit } from "./storeCredit.js";
 
-/** Build a quote. Nothing moves until the customer accepts it. */
-export async function quoteBuylist(ctx: Ctx, input: BuylistQuoteInput, rule: BuylistRule = DEFAULT_BUYLIST_RULE) {
-  const { prisma, actor } = ctx;
-  const variantIds = input.lines.flatMap((l) => (l.variantId ? [l.variantId] : []));
-  const variants = await prisma.variant.findMany({ where: { id: { in: variantIds } }, include: { product: true } });
-  const byId = new Map(variants.map((v) => [v.id, v]));
+const toRule = (p: BuylistPolicy): BuylistPolicyRule => ({
+  cashMarginBps: p.cashMarginBps,
+  creditBonusBps: p.creditBonusBps,
+  trendWeightBps: p.trendWeightBps,
+  maxTrendUpBps: p.maxTrendUpBps,
+  overstockQty: p.overstockQty,
+  overstockCutBps: p.overstockCutBps,
+  minResaleCents: p.minResaleCents,
+});
 
-  const lines = input.lines.map((l) => {
-    const v = l.variantId ? byId.get(l.variantId) : undefined;
+export interface SuggestedLine {
+  variantId?: string;
+  description: string;
+  quantity: number;
+  /** The resale figure used (market, your price, or entered). */
+  marketCents: number;
+  suggestion: OfferSuggestion;
+}
+
+/** Suggested offers for what a customer brought in, from the store's trade-in rules. */
+export async function suggestLines(db: Db, locationId: string, lines: Pick<BuylistLineInput, "variantId" | "description" | "quantity" | "marketCents">[]): Promise<SuggestedLine[]> {
+  const variantIds = lines.flatMap((l) => (l.variantId ? [l.variantId] : []));
+  const [variants, policies, lineage, trends, levels] = await Promise.all([
+    db.variant.findMany({ where: { id: { in: variantIds } }, include: { product: true } }),
+    db.buylistPolicy.findMany(),
+    categoryLineage(db),
+    marketTrends(db, variantIds),
+    db.inventoryLevel.findMany({ where: { variantId: { in: variantIds }, locationId } }),
+  ]);
+  const ruleFor = (kind: string | null, categoryId: string | null): BuylistPolicyRule => {
+    // Most specific category first, then product type, then the store default.
+    for (const c of categoryId ? (lineage.get(categoryId) ?? []) : []) {
+      const p = policies.find((x) => x.categoryId === c);
+      if (p) return toRule(p);
+    }
+    const byKind = kind ? policies.find((x) => x.kind === kind && !x.categoryId) : undefined;
+    const fallback = policies.find((x) => !x.kind && !x.categoryId);
+    return byKind ? toRule(byKind) : fallback ? toRule(fallback) : DEFAULT_BUYLIST_POLICY;
+  };
+
+  return lines.map((l) => {
+    const v = l.variantId ? variants.find((x) => x.id === l.variantId) : undefined;
     if (l.variantId && !v) throw notFound(`Variant ${l.variantId}`);
-    if (!v && !l.description) throw badRequest("DESCRIPTION_REQUIRED", "Uncataloged items need a description");
-    const offer = buylistOffer(l.marketCents, rule);
+    if (!v && !l.description) throw badRequest("DESCRIPTION_REQUIRED", "Items not in the catalog need a description");
+    if (!v && l.marketCents == null) throw badRequest("RESALE_REQUIRED", `Enter what "${l.description}" resells for`);
+    const suggestion = suggestOffer(
+      {
+        priceCents: v?.priceCents ?? null,
+        marketCents: v?.marketCents ?? null,
+        // A figure typed at the counter overrides the catalog's for this ticket.
+        enteredCents: l.marketCents ?? null,
+        trendBps: v ? (trends.get(v.id)?.changeBps ?? null) : null,
+        onHand: v ? (levels.find((x) => x.variantId === v.id)?.onHand ?? 0) : 0,
+      },
+      ruleFor(v?.product.kind ?? null, v?.product.categoryId ?? null),
+    );
     return {
       variantId: v?.id,
       description: v ? describeVariant(v.product.title, v) : l.description!,
       quantity: l.quantity,
-      marketCents: l.marketCents,
-      cashOfferCents: l.cashOfferCents ?? offer.cashCents,
-      creditOfferCents: l.creditOfferCents ?? offer.creditCents,
+      marketCents: suggestion.resaleCents,
+      suggestion,
     };
   });
+}
+
+/**
+ * Build a quote. Offers default to the suggestion; an employee may change
+ * them, but going above the suggestion needs BUYLIST_OVERRIDE (checked by
+ * `authorizeOverride`). Nothing moves until the customer accepts.
+ */
+export async function quoteBuylist(ctx: Ctx, input: BuylistQuoteInput, authorizeOverride: () => Promise<void> = async () => undefined) {
+  const { prisma, actor } = ctx;
+  const suggested = await suggestLines(prisma, input.locationId, input.lines);
+  const lines = suggested.map((s, i) => {
+    const l = input.lines[i]!;
+    return {
+      variantId: s.variantId,
+      description: s.description,
+      quantity: s.quantity,
+      marketCents: s.marketCents,
+      cashOfferCents: l.cashOfferCents ?? s.suggestion.cashCents,
+      creditOfferCents: l.creditOfferCents ?? s.suggestion.creditCents,
+      suggestedCashCents: s.suggestion.cashCents,
+      suggestedCreditCents: s.suggestion.creditCents,
+      offerNotes: s.suggestion.notes,
+    };
+  });
+  if (lines.some((l) => l.cashOfferCents > l.suggestedCashCents || l.creditOfferCents > l.suggestedCreditCents)) await authorizeOverride();
 
   return prisma.buylistTicket.create({
     data: {
@@ -38,6 +110,19 @@ export async function quoteBuylist(ctx: Ctx, input: BuylistQuoteInput, rule: Buy
     },
     include: { lines: true },
   });
+}
+
+/** Replace the store's trade-in rules. */
+export async function savePolicies(db: Db, rules: (BuylistPolicyRule & { kind: string | null; categoryId: string | null })[]) {
+  const seen = new Set<string>();
+  for (const r of rules) {
+    const k = `${r.kind}|${r.categoryId}`;
+    if (seen.has(k)) throw badRequest("DUPLICATE_RULE", "Only one rule per product type or category");
+    seen.add(k);
+  }
+  await db.buylistPolicy.deleteMany({});
+  await db.buylistPolicy.createMany({ data: rules as Prisma.BuylistPolicyCreateManyInput[] });
+  return db.buylistPolicy.findMany();
 }
 
 /** Customer accepts: pay out cash or credit, and receive the goods into stock at the offer as cost. */

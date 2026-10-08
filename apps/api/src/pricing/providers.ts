@@ -5,6 +5,8 @@ export interface MarketQuote {
   source: string;
   /** Near-mint market price by finish, in cents. */
   byFinish: Partial<Record<CardFinish, number>>;
+  /** Card image from the feed, used when the product has none. */
+  imageUrl?: string;
 }
 
 export interface PriceProvider {
@@ -27,10 +29,16 @@ export class ScryfallProvider implements PriceProvider {
       headers: { accept: "application/json", "user-agent": "MyPOS/0.1" },
     });
     if (!res.ok) return null;
-    const card = (await res.json()) as { prices?: Record<string, string | null> };
+    const card = (await res.json()) as {
+      prices?: Record<string, string | null>;
+      image_uris?: { normal?: string };
+      card_faces?: { image_uris?: { normal?: string } }[];
+    };
     const prices = card.prices ?? {};
     return {
       source: this.source,
+      // Double-faced cards keep their images per face.
+      imageUrl: card.image_uris?.normal ?? card.card_faces?.[0]?.image_uris?.normal,
       byFinish: { NONFOIL: toCents(prices.usd), FOIL: toCents(prices.usd_foil), ETCHED: toCents(prices.usd_etched) },
     };
   }
@@ -45,10 +53,11 @@ export class PokemonTcgProvider implements PriceProvider {
       headers: config.pokemonTcgApiKey ? { "X-Api-Key": config.pokemonTcgApiKey } : {},
     });
     if (!res.ok) return null;
-    const body = (await res.json()) as { data?: { tcgplayer?: { prices?: Record<string, { market?: number }> } } };
+    const body = (await res.json()) as { data?: { images?: { small?: string; large?: string }; tcgplayer?: { prices?: Record<string, { market?: number }> } } };
     const prices = body.data?.tcgplayer?.prices ?? {};
     return {
       source: this.source,
+      imageUrl: body.data?.images?.small,
       byFinish: {
         NONFOIL: toCents(prices.normal?.market),
         HOLO: toCents(prices.holofoil?.market),

@@ -195,6 +195,16 @@ enum CardFinish {
   HOLO
 }
 
+enum GradingCompany {
+  PSA
+  BGS
+  CGC
+  SGC
+  TAG
+  ACE
+  OTHER
+}
+
 enum ItemCondition {
   DS
   VNDS
@@ -212,9 +222,19 @@ model Variant {
   costCents  Int?
   taxable    Boolean @default(true)
 
+  /// Raw (ungraded) card condition.
   condition CardCondition?
   finish    CardFinish?
   language  String?
+
+  /// Photo of this exact item (a used pair, a specific slab); falls back to the product's.
+  imageUrl String?
+
+  /// Graded (slabbed) card. A graded variant is a one-of-one identified by its cert.
+  gradingCompany GradingCompany?
+  /// As printed on the slab: "10", "9.5", "Black Label 10", "Pristine 10".
+  grade          String?
+  certNumber     String?
 
   size          String?
   colorway      String?
@@ -231,6 +251,8 @@ model Variant {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@unique([gradingCompany, certNumber])
 
   inventory      InventoryLevel[]
   movements      InventoryMovement[]
@@ -461,6 +483,11 @@ model BuylistLine {
   marketCents      Int
   cashOfferCents   Int
   creditOfferCents Int
+  /// What the store's rules suggested, kept next to what was offered.
+  suggestedCashCents   Int?
+  suggestedCreditCents Int?
+  /// Why: "Resells for about $100.00 (market price)", ...
+  offerNotes           String[] @default([])
 }
 
 // ─── Consignment & authentication (sneakers / streetwear) ────────
@@ -858,4 +885,22 @@ model DiscountPreset {
   active    Boolean      @default(true)
   sortOrder Int          @default(0)
   createdAt DateTime     @default(now())
+}
+
+/// Trade-in offer rules. No kind/category = store default; a category rule
+/// beats a product-type rule, which beats the default.
+model BuylistPolicy {
+  id              String       @id @default(cuid())
+  kind            ProductKind?
+  categoryId      String?
+  cashMarginBps   Int
+  creditBonusBps  Int
+  trendWeightBps  Int
+  maxTrendUpBps   Int
+  overstockQty    Int?
+  overstockCutBps Int          @default(2000)
+  minResaleCents  Int          @default(100)
+  updatedAt       DateTime     @updatedAt
+
+  @@unique([kind, categoryId])
 }

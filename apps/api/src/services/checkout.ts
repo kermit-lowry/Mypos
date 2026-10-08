@@ -1,4 +1,5 @@
 import { Prisma, type ProductKind } from "@prisma/client";
+import { gradeLabel, isNewItem, ITEM_CONDITION_LABELS, type ItemCondition } from "@mypos/shared";
 import { applyBps, cardAdjustment, cardAmountDue, discountBps, dualTotals, earnFor, isCardPriced, type CheckoutInput, type Permission, type TenderType } from "@mypos/shared";
 import type { Tx } from "../db.js";
 import { AppError, badRequest, conflict, forbidden, notFound, paymentFailed } from "../errors.js";
@@ -102,6 +103,7 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
   // ── Employee permissions: price changes and manual discounts ──
   const approval = await registerApprovals(ctx, {
     customDiscount,
+    storeCreditTender: input.tenders.some((t) => t.type === "STORE_CREDIT"),
     priceOverride: input.lines.some((l) => l.unitPriceCents !== undefined && l.unitPriceCents !== byId.get(l.variantId)!.priceCents),
     maxDiscountBps: Math.max(0, ...priced.map((p) => discountBps(p.discountCents, p.unitPriceCents * p.quantity))),
   });
@@ -493,7 +495,10 @@ interface RegisterApproval {
  * must fit the employee's discount limit. Anything beyond that needs a
  * manager's PIN approval that covers it (and whose own limit covers it).
  */
-async function registerApprovals(ctx: Ctx, need: { priceOverride: boolean; maxDiscountBps: number; customDiscount: boolean }): Promise<RegisterApproval> {
+async function registerApprovals(
+  ctx: Ctx,
+  need: { priceOverride: boolean; maxDiscountBps: number; customDiscount: boolean; storeCreditTender: boolean },
+): Promise<RegisterApproval> {
   const { actor, perms } = ctx;
   const levels = perms?.levels;
   const canOverride = levels?.PRICE_OVERRIDE === "ALLOW";
@@ -503,6 +508,10 @@ async function registerApprovals(ctx: Ctx, need: { priceOverride: boolean; maxDi
   if (need.priceOverride) {
     if (!levels || levels.PRICE_OVERRIDE === "DENY") throw permissionDenied("PRICE_OVERRIDE");
     if (levels.PRICE_OVERRIDE === "PIN") required.push("PRICE_OVERRIDE");
+  }
+  if (need.storeCreditTender) {
+    if (!levels || levels.TENDER_STORE_CREDIT === "DENY") throw permissionDenied("TENDER_STORE_CREDIT");
+    if (levels.TENDER_STORE_CREDIT === "PIN") required.push("TENDER_STORE_CREDIT");
   }
   if (need.maxDiscountBps > 0) {
     if (!levels || levels.DISCOUNT_LINE === "DENY") throw permissionDenied("DISCOUNT_LINE");
@@ -530,11 +539,26 @@ function sumChange(order: OrderWithDetails): number {
   return order.payments.reduce((a, p) => a + (p.changeCents ?? 0), 0);
 }
 
+/** Receipt/ticket title: "Charizard ex (PSA 10 #12345678 / HOLO)", "Jordan 4 (Size 10 / New)". */
 export function describeVariant(
   title: string,
-  v: { condition: string | null; finish: string | null; size: string | null; itemCondition: string | null },
+  v: {
+    condition: string | null;
+    finish: string | null;
+    size: string | null;
+    itemCondition: string | null;
+    gradingCompany?: string | null;
+    grade?: string | null;
+    certNumber?: string | null;
+  },
 ): string {
-  const parts = [v.condition, v.finish && v.finish !== "NONFOIL" ? v.finish : null, v.size ? `Size ${v.size}` : null, v.itemCondition];
+  const graded = gradeLabel(v.gradingCompany, v.grade);
+  const parts = [
+    graded ? `${graded}${v.certNumber ? ` #${v.certNumber}` : ""}` : v.condition,
+    v.finish && v.finish !== "NONFOIL" ? v.finish : null,
+    v.size ? `Size ${v.size}` : null,
+    v.itemCondition ? (isNewItem(v.itemCondition) ? "New" : ITEM_CONDITION_LABELS[v.itemCondition as ItemCondition] ?? v.itemCondition) : null,
+  ];
   const suffix = parts.filter(Boolean).join(" / ");
   return suffix ? `${title} (${suffix})` : title;
 }

@@ -35,7 +35,7 @@ export function storefrontRoutes(app: FastifyInstance, base: Ctx, opts: { fulfil
       take: 48,
       ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
       orderBy: { id: "asc" },
-      include: { variants: { include: { inventory: true } } },
+      include: { variants: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], include: { inventory: true } } },
     });
     const trends = await marketTrends(prisma, products.flatMap((p) => p.variants.map((v) => v.id)));
     return {
@@ -49,13 +49,18 @@ export function storefrontRoutes(app: FastifyInstance, base: Ctx, opts: { fulfil
         setName: p.setName,
         variants: p.variants.map((v) => ({
           id: v.id,
+          imageUrl: v.imageUrl ?? p.imageUrl,
           priceCents: cardPrice(v.priceCents, bps),
           cashPriceCents: v.priceCents,
           condition: v.condition,
+          gradingCompany: v.gradingCompany,
+          grade: v.grade,
+          certNumber: v.certNumber,
           finish: v.finish,
           size: v.size,
           colorway: v.colorway,
           itemCondition: v.itemCondition,
+          newOrUsed: v.itemCondition ? (v.itemCondition === "DS" ? "NEW" : "USED") : null,
           available: Math.max(0, v.inventory.reduce((a, l) => a + l.onHand - l.reserved, 0)),
           /** Market price and 7-day change, for items with a price feed. */
           market: trends.get(v.id)?.marketCents != null ? trends.get(v.id) : null,

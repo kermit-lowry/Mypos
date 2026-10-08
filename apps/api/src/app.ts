@@ -6,6 +6,7 @@ import { config } from "./config.js";
 import { AppError } from "./errors.js";
 import type { PaymentGateway } from "./payments/gateway.js";
 import { adminRoutes } from "./routes/admin.js";
+import { defaultCardSources, type CardSource } from "./pricing/cardSources.js";
 import { catalogRoutes } from "./routes/catalog.js";
 import { dealRoutes } from "./routes/deals.js";
 import { loyaltyRoutes } from "./routes/loyalty.js";
@@ -17,7 +18,7 @@ import { terminalRoutes } from "./routes/terminals.js";
 import { registerRequestLog } from "./services/requestLog.js";
 import { tradeRoutes } from "./routes/trade.js";
 
-export async function buildApp(deps: { prisma: PrismaClient; gateway: PaymentGateway; logger?: boolean }) {
+export async function buildApp(deps: { prisma: PrismaClient; gateway: PaymentGateway; logger?: boolean; cardSources?: CardSource[] }) {
   const app = Fastify({ logger: deps.logger ?? false });
   // Browsers (web store, web preview/back office) need the write methods
   // allowed explicitly; @fastify/cors only allows GET, HEAD, and POST by default.
@@ -43,7 +44,7 @@ export async function buildApp(deps: { prisma: PrismaClient; gateway: PaymentGat
   staffRoutes(app, ctx);
   catalogRoutes(app, ctx);
   salesRoutes(app, ctx);
-  tradeRoutes(app, ctx);
+  tradeRoutes(app, ctx, deps.cardSources ?? defaultCardSources());
   adminRoutes(app, ctx);
   loyaltyRoutes(app, ctx);
   terminalRoutes(app, ctx);

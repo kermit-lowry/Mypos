@@ -9,7 +9,7 @@ export type DisplayState =
       storeName: string;
       /** e.g. "4%"; null when dual pricing is off. */
       cardPercent: string | null;
-      lines: { title: string; detail: string; quantity: number; cashCents: number; cardCents: number; market?: MarketTrend | null }[];
+      lines: { title: string; detail: string; quantity: number; cashCents: number; cardCents: number; market?: MarketTrend | null; imageUrl?: string | null }[];
       /** Automated deals applied (cash-price amounts). */
       promotions?: { name: string; discountCents: number }[];
       cash: { subtotalCents: number; discountCents: number; taxCents: number; totalCents: number };

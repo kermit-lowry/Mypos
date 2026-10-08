@@ -1,4 +1,4 @@
-import { cardPrice, formatCents } from "@mypos/shared";
+import { cardPrice, formatCents, gradeLabel, isNewItem } from "@mypos/shared";
 import type { PrismaClient } from "@prisma/client";
 import bwipjs from "bwip-js";
 import { Socket } from "node:net";
@@ -29,13 +29,15 @@ export async function labelData(prisma: PrismaClient, locationId: string, items:
     const v = variants.find((x) => x.id === i.variantId);
     if (!v) throw notFound(`Variant ${i.variantId}`);
     const p = v.product;
+    const graded = gradeLabel(v.gradingCompany, v.grade);
     const detail = [
+      graded ? `${graded}${v.certNumber ? ` cert ${v.certNumber}` : ""}` : null,
       p.setCode && `${p.setCode}${p.collectorNumber ? ` #${p.collectorNumber}` : ""}`,
-      v.condition,
+      graded ? null : v.condition,
       v.finish && v.finish !== "NONFOIL" ? v.finish.replace("_", " ") : null,
       v.size && `Size ${v.size}`,
       v.colorway,
-      v.itemCondition,
+      v.itemCondition ? (isNewItem(v.itemCondition) ? "NEW" : `USED${v.itemCondition === "USED" ? "" : ` (${v.itemCondition})`}`) : null,
       p.styleCode,
     ]
       .filter(Boolean)

@@ -83,6 +83,10 @@ export interface Variant {
   size: string | null;
   colorway: string | null;
   itemCondition: string | null;
+  gradingCompany?: string | null;
+  grade?: string | null;
+  certNumber?: string | null;
+  imageUrl?: string | null;
   taxable: boolean;
   serialized: boolean;
   inventory?: { locationId: string; onHand: number }[];
@@ -95,6 +99,7 @@ export interface Product {
   kind: string;
   title: string;
   brand: string | null;
+  imageUrl?: string | null;
   setName: string | null;
   setCode: string | null;
   collectorNumber: string | null;

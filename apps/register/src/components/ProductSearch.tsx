@@ -1,5 +1,5 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { formatCents } from "@mypos/shared";
+import { formatCents, gradeLabel, isNewItem, ITEM_CONDITION_LABELS, type ItemCondition } from "@mypos/shared";
 import * as SecureStore from "../storage";
 import { useEffect, useRef, useState } from "react";
 import { FlatList, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
@@ -8,12 +8,24 @@ import { useSession } from "../session";
 import { colors, ui } from "../theme";
 import { Button } from "./Button";
 import { MarketBadge } from "./MarketBadge";
+import { EMPTY_FILTERS, filterParams, hasFilters, SearchFilters, type Filters } from "./SearchFilters";
+import { Thumb } from "./Thumb";
 
+/** "PSA 10 #12345678 · HOLO", "NM · FOIL", "Sz 10 · Chicago · New". */
 export function variantLabel(v: Variant): string {
-  return [v.condition, v.finish && v.finish !== "NONFOIL" ? v.finish : null, v.size && `Sz ${v.size}`, v.colorway, v.itemCondition]
+  const graded = gradeLabel(v.gradingCompany, v.grade);
+  return [
+    graded ? `${graded}${v.certNumber ? ` #${v.certNumber}` : ""}` : v.condition,
+    v.finish && v.finish !== "NONFOIL" ? v.finish : null,
+    v.size && `Sz ${v.size}`,
+    v.colorway,
+    v.itemCondition ? (isNewItem(v.itemCondition) ? "New" : ITEM_CONDITION_LABELS[v.itemCondition as ItemCondition]) : null,
+  ]
     .filter(Boolean)
     .join(" · ");
 }
+
+export const imageOf = (p: Product, v: Variant) => v.imageUrl ?? p.imageUrl ?? null;
 
 /** Search by name, set code, collector #, style code, SKU, or scanned barcode. */
 export function ProductSearch({ onPick }: { onPick: (p: Product, v: Variant) => void }) {
@@ -22,6 +34,8 @@ export function ProductSearch({ onPick }: { onPick: (p: Product, v: Variant) => 
   const [results, setResults] = useState<Product[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
+  const [showFilters, setShowFilters] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const input = useRef<TextInput>(null);
   // Devices with a built-in or USB/Bluetooth scanner "type" the barcode and
@@ -38,15 +52,15 @@ export function ProductSearch({ onPick }: { onPick: (p: Product, v: Variant) => 
     setTimeout(() => input.current?.focus(), 50);
   };
 
-  async function search(term: string) {
-    if (!term.trim()) return;
+  async function search(term: string, f: Filters = filters) {
+    if (!term.trim() && !hasFilters(f)) return;
     setError(null);
     try {
-      const r = await api<{ results: Product[] }>("GET", `/catalog/search?q=${encodeURIComponent(term.trim())}&locationId=${location.id}`);
+      const r = await api<{ results: Product[] }>("GET", `/catalog/search?q=${encodeURIComponent(term.trim())}&locationId=${location.id}${filterParams(f)}`);
       setResults(r.results);
       // A barcode/SKU hit with one variant goes straight to the cart.
       const only = r.results.length === 1 && r.results[0]!.variants.length === 1 ? r.results[0]! : null;
-      if (only && (only.variants[0]!.sku === term.trim() || term.trim().match(/^\d{8,14}$/))) {
+      if (only && !hasFilters(f) && (only.variants[0]!.sku === term.trim() || term.trim().match(/^\d{8,14}$/))) {
         onPick(only, only.variants[0]!);
         setQ("");
       }
@@ -57,6 +71,13 @@ export function ProductSearch({ onPick }: { onPick: (p: Product, v: Variant) => 
       input.current?.focus();
     }
   }
+
+  // Changing a filter re-runs the search right away (filters alone are a valid search).
+  const changeFilters = (f: Filters) => {
+    setFilters(f);
+    if (hasFilters(f) || q.trim()) search(q, f);
+    else setResults([]);
+  };
 
   async function openScanner() {
     if (!permission?.granted && !(await requestPermission()).granted) return;
@@ -82,8 +103,10 @@ export function ProductSearch({ onPick }: { onPick: (p: Product, v: Variant) => 
           returnKeyType="search"
         />
         <Button title="Camera" kind="secondary" onPress={openScanner} />
+        <Button title={hasFilters(filters) ? "Filters ●" : "Filters"} kind={showFilters ? "primary" : "secondary"} onPress={() => setShowFilters((x) => !x)} />
         {Platform.OS === "android" && <Button title={scannerMode ? "⌨ Off" : "⌨ On"} kind="secondary" onPress={toggleScanner} />}
       </View>
+      {showFilters && <SearchFilters value={filters} onChange={changeFilters} locationId={location.id} />}
       {error && <Text style={[ui.error, { marginTop: 8 }]}>{error}</Text>}
       <FlatList
         style={{ marginTop: 12 }}
@@ -93,6 +116,7 @@ export function ProductSearch({ onPick }: { onPick: (p: Product, v: Variant) => 
           const onHand = v.inventory?.find((i) => i.locationId === location.id)?.onHand ?? 0;
           return (
             <Pressable onPress={() => onPick(p, v)} style={({ pressed }) => [styles.result, pressed && { backgroundColor: colors.panelAlt }]}>
+              <Thumb uri={imageOf(p, v)} title={p.title} size={36} />
               <View style={{ flex: 1 }}>
                 <Text style={ui.text} numberOfLines={1}>
                   {p.title}

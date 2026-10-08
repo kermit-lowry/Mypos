@@ -3,6 +3,7 @@ import {
   BuylistPayouts,
   CardConditions,
   CardFinishes,
+  GradingCompanies,
   ItemConditions,
   ProductKinds,
   SalesChannels,
@@ -21,9 +22,16 @@ export const VariantInput = z.object({
   costCents: cents.optional(),
   taxable: z.boolean().default(true),
   // TCG singles
+  /** Raw (ungraded) card condition. */
   condition: z.enum(CardConditions).optional(),
   finish: z.enum(CardFinishes).optional(),
   language: z.string().optional(),
+  /** Photo of this exact item; the product's image is used when empty. */
+  imageUrl: z.string().url().optional(),
+  /** Graded (slabbed) cards: company, grade as printed on the slab, and cert number. */
+  gradingCompany: z.enum(GradingCompanies).optional(),
+  grade: z.string().min(1).max(30).optional(),
+  certNumber: z.string().min(3).max(40).optional(),
   // Sneakers / apparel
   size: z.string().optional(),
   colorway: z.string().optional(),
@@ -56,6 +64,13 @@ export const ProductInput = z.object({
   /** Which channels this product is published to. */
   channels: z.array(z.enum(SalesChannels)).default(["POS"]),
   variants: z.array(VariantInput).min(1),
+}).superRefine((p, ctx) => {
+  p.variants.forEach((v, i) => {
+    const path = ["variants", i];
+    if (v.gradingCompany && !v.grade) ctx.addIssue({ code: "custom", path: [...path, "grade"], message: "Enter the grade on the slab" });
+    if ((v.grade || v.certNumber) && !v.gradingCompany) ctx.addIssue({ code: "custom", path: [...path, "gradingCompany"], message: "Pick the grading company" });
+    if (v.gradingCompany && v.condition) ctx.addIssue({ code: "custom", path: [...path, "condition"], message: "Graded cards use the grade, not a raw condition" });
+  });
 });
 export type ProductInput = z.infer<typeof ProductInput>;
 
@@ -126,8 +141,9 @@ export const BuylistLineInput = z.object({
   variantId: id.optional(),
   description: z.string().optional(),
   quantity: z.number().int().positive(),
-  marketCents: cents,
-  /** Staff may override the computed offer. */
+  /** What it resells for. Optional for catalog items (the store's rules work it out); needed for anything else. */
+  marketCents: cents.optional(),
+  /** Staff may override the computed offer (above the suggestion needs BUYLIST_OVERRIDE). */
   cashOfferCents: cents.optional(),
   creditOfferCents: cents.optional(),
 });
@@ -322,3 +338,17 @@ export const DiscountPresetInput = z
     sortOrder: z.number().int().default(0),
   })
   .refine((p) => p.kind !== "PERCENT" || p.value <= 10_000, { path: ["value"], message: "Can't be more than 100%" });
+
+export const BuylistPolicyInput = z.object({
+  /** Leave both empty for the store default. */
+  kind: z.enum(ProductKinds).nullable().default(null),
+  categoryId: z.string().nullable().default(null),
+  cashMarginBps: z.number().int().min(0).max(10_000),
+  creditBonusBps: z.number().int().min(0).max(10_000),
+  trendWeightBps: z.number().int().min(0).max(20_000),
+  maxTrendUpBps: z.number().int().min(0).max(10_000),
+  overstockQty: z.number().int().positive().nullable().default(null),
+  overstockCutBps: z.number().int().min(0).max(10_000).default(2000),
+  minResaleCents: z.number().int().min(0).default(100),
+});
+export type BuylistPolicyInput = z.infer<typeof BuylistPolicyInput>;

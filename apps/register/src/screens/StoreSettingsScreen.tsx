@@ -3,12 +3,14 @@ import { useState } from "react";
 import { ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { api, ApiError, type Location } from "../api";
 import { Button } from "../components/Button";
-import { useSession } from "../session";
+import { useCan, useSession } from "../session";
+import { TradeInRules } from "./TradeInRules";
 import { colors, ui } from "../theme";
 
 /** Owner-only store settings: dual pricing, label printer, receipt text. */
 export function StoreSettingsScreen({ onSaved }: { onSaved: (l: Location) => void }) {
   const { location } = useSession();
+  const can = useCan();
   const [dual, setDual] = useState(location.cardPriceBps > 0);
   const [percent, setPercent] = useState(location.cardPriceBps > 0 ? String(location.cardPriceBps / 100) : "3.99");
   const [printer, setPrinter] = useState(location.labelPrinterHost ?? "");
@@ -98,6 +100,8 @@ export function StoreSettingsScreen({ onSaved }: { onSaved: (l: Location) => voi
 
       {message && <Text style={ui.text}>{message}</Text>}
       <Button title="Save" kind="good" onPress={save} disabled={!valid} />
+
+      {can("MANAGE_BUYLIST") !== "DENY" && <TradeInRules />}
     </ScrollView>
   );
 }

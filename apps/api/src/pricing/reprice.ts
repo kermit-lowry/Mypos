@@ -36,7 +36,11 @@ export async function repriceSingles(
       quote = await provider.quote(product).catch(() => null);
       if (quote) break;
     }
-    for (const v of product.variants) {
+    if (quote?.imageUrl && !product.imageUrl) {
+      await prisma.product.update({ where: { id: product.id }, data: { imageUrl: quote.imageUrl } });
+    }
+    // Graded slabs aren't priced from raw-card market data.
+    for (const v of product.variants.filter((x) => !x.gradingCompany)) {
       summary.checked++;
       const nm = quote?.byFinish[v.finish ?? "NONFOIL"];
       if (!quote || nm === undefined) {

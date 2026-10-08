@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { FlatList, Pressable, Text, View } from "react-native";
 import { api } from "../api";
 import { MarketBadge } from "../components/MarketBadge";
+import { Thumb } from "../components/Thumb";
 import { TerminalPicker, useTerminal } from "../components/TerminalPicker";
 import { displayChannel, type DisplayState } from "../display";
 import { useLayout } from "../layout";
@@ -87,7 +88,8 @@ export function CustomerDisplayScreen({ onExit }: { onExit: () => void }) {
           data={d.lines}
           keyExtractor={(_, i) => String(i)}
           renderItem={({ item: l }) => (
-            <View style={[ui.row, { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border }]}>
+            <View style={[ui.row, { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border, gap: 12 }]}>
+              <Thumb uri={l.imageUrl} title={l.title} size={compact ? 40 : 56} />
               <View style={{ flex: 1 }}>
                 <Text style={[ui.text, { fontSize: 20 }]} numberOfLines={1}>
                   {l.quantity > 1 ? `${l.quantity} × ` : ""}

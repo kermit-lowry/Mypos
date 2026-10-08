@@ -1,8 +1,8 @@
 import type { Prisma } from "@prisma/client";
-import { InventoryAdjustInput, ProductInput, buylistOffer, sellPrice } from "@mypos/shared";
+import { CardConditions, compareSizes, GradingCompanies, InventoryAdjustInput, NEW_OR_USED_KINDS, ProductInput, buylistOffer, sellPrice } from "@mypos/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { notFound } from "../errors.js";
+import { badRequest, conflict, notFound } from "../errors.js";
 import { actorOf, parse, requirePermission, requireRole } from "../http.js";
 import { repriceSingles } from "../pricing/reprice.js";
 import { defaultProviders } from "../pricing/providers.js";
@@ -15,42 +15,149 @@ export function catalogRoutes(app: FastifyInstance, base: Ctx) {
   const { prisma } = base;
   const staff = { preHandler: requireRole("CASHIER") };
 
-  /** Register search: barcode/SKU exact match first, then title / set / number. */
+  /** Comma-separated multi-select filter: "10,10.5" -> ["10", "10.5"]. */
+  const list = <T extends string>(values?: readonly T[]) =>
+    z
+      .string()
+      .optional()
+      .transform((v) => (v ? v.split(",").map((x) => x.trim()).filter(Boolean) : []))
+      .refine((xs) => !values || xs.every((x) => (values as readonly string[]).includes(x)), { message: "Unknown filter value" }) as unknown as z.ZodType<T[], z.ZodTypeDef, string | undefined>;
+
+  const SearchQuery = z.object({
+    /** Free text: name, set, collector #, style code, brand. Optional when filters are set. */
+    q: z.string().optional(),
+    kind: z.string().optional(),
+    locationId: z.string().optional(),
+    /** Multi-select filters, comma separated. */
+    sizes: list(),
+    grades: list(),
+    gradingCompanies: list(GradingCompanies),
+    conditions: list(CardConditions),
+    /** DS, VNDS, USED, DAMAGED; or NEW / USED_ANY. */
+    itemConditions: list(["DS", "VNDS", "USED", "DAMAGED", "NEW", "USED_ANY"] as const),
+    /** true = slabs only, false = raw only. */
+    graded: z.enum(["true", "false"]).optional(),
+    /** Only items with stock at `locationId` (or anywhere). */
+    inStock: z.enum(["true", "false"]).optional(),
+    // Single-value forms kept for older register builds.
+    condition: z.enum(CardConditions).optional(),
+    itemCondition: z.enum(["DS", "VNDS", "USED", "DAMAGED", "NEW", "USED_ANY"]).optional(),
+  });
+
+  function variantFilter(f: z.infer<typeof SearchQuery>): Prisma.VariantWhereInput {
+    const conditions = [...f.conditions, ...(f.condition ? [f.condition] : [])];
+    const itemConds = new Set<string>();
+    for (const c of [...f.itemConditions, ...(f.itemCondition ? [f.itemCondition] : [])]) {
+      if (c === "NEW") itemConds.add("DS");
+      else if (c === "USED_ANY") ["VNDS", "USED", "DAMAGED"].forEach((x) => itemConds.add(x));
+      else itemConds.add(c);
+    }
+    const and: Prisma.VariantWhereInput[] = [];
+    if (f.sizes.length) and.push({ size: { in: f.sizes, mode: "insensitive" } });
+    if (f.grades.length) and.push({ grade: { in: f.grades, mode: "insensitive" } });
+    if (f.gradingCompanies.length) and.push({ gradingCompany: { in: f.gradingCompanies } });
+    if (conditions.length) and.push({ condition: { in: conditions } });
+    if (itemConds.size) and.push({ itemCondition: { in: [...itemConds] as ("DS" | "VNDS" | "USED" | "DAMAGED")[] } });
+    if (f.graded === "true") and.push({ gradingCompany: { not: null } });
+    if (f.graded === "false") and.push({ gradingCompany: null });
+    if (f.inStock === "true") and.push({ inventory: { some: { onHand: { gt: 0 }, ...(f.locationId ? { locationId: f.locationId } : {}) } } });
+    return and.length ? { AND: and } : {};
+  }
+
+  /**
+   * Register search: a barcode, SKU, or slab cert number goes straight to that
+   * item; otherwise text and/or filters (e.g. every size 10 and 10.5 shoe in stock).
+   */
   app.get("/catalog/search", staff, async (req) => {
-    const { q, kind, locationId } = parse(
-      z.object({ q: z.string().min(1), kind: z.string().optional(), locationId: z.string().optional() }),
-      req.query,
-    );
-    const exact = await prisma.variant.findFirst({
-      where: { OR: [{ barcode: q }, { sku: q }] },
-      include: { product: true, inventory: true },
-    });
-    if (exact) return { results: await withMarket(prisma, [{ ...exact.product, variants: [exact] }]) };
+    const f = parse(SearchQuery, req.query);
+    const q = f.q?.trim() ?? "";
+    const variantWhere = variantFilter(f);
+    const filtered = Object.keys(variantWhere).length > 0;
+    if (!q && !filtered && !f.kind) throw badRequest("SEARCH_EMPTY", "Type something to search for, or pick a filter");
+
+    if (q) {
+      const exact = await prisma.variant.findFirst({
+        where: { OR: [{ barcode: q }, { sku: q }, { certNumber: q }] },
+        include: { product: true, inventory: true },
+      });
+      if (exact) return { results: await withMarket(prisma, [{ ...exact.product, variants: [exact] }]) };
+    }
 
     const where: Prisma.ProductWhereInput = {
-      ...(kind ? { kind: kind as Prisma.ProductWhereInput["kind"] } : {}),
-      OR: [
-        { title: { contains: q, mode: "insensitive" } },
-        { setName: { contains: q, mode: "insensitive" } },
-        { setCode: { equals: q, mode: "insensitive" } },
-        { collectorNumber: q },
-        { styleCode: { equals: q, mode: "insensitive" } },
-        { brand: { contains: q, mode: "insensitive" } },
-      ],
+      ...(f.kind ? { kind: f.kind as Prisma.ProductWhereInput["kind"] } : {}),
+      ...(q
+        ? {
+            OR: [
+              { title: { contains: q, mode: "insensitive" } },
+              { setName: { contains: q, mode: "insensitive" } },
+              { setCode: { equals: q, mode: "insensitive" } },
+              { collectorNumber: q },
+              { styleCode: { equals: q, mode: "insensitive" } },
+              { brand: { contains: q, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+      ...(filtered ? { variants: { some: variantWhere } } : {}),
     };
     const results = await prisma.product.findMany({
       where,
       take: 50,
       orderBy: { title: "asc" },
-      include: { variants: { include: { inventory: locationId ? { where: { locationId } } : true } } },
+      include: {
+        variants: {
+          where: filtered ? variantWhere : undefined,
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          include: { inventory: f.locationId ? { where: { locationId: f.locationId } } : true },
+        },
+      },
     });
     return { results: await withMarket(prisma, results) };
+  });
+
+  /** Filter choices for the register: the sizes, grades, and conditions actually stocked. */
+  app.get("/catalog/facets", staff, async (req) => {
+    const { kind, locationId } = parse(z.object({ kind: z.string().optional(), locationId: z.string().optional() }), req.query);
+    const variants = await prisma.variant.findMany({
+      where: { ...(kind ? { product: { kind: kind as never } } : {}) },
+      select: { size: true, grade: true, gradingCompany: true, condition: true, itemCondition: true, inventory: { where: locationId ? { locationId } : {}, select: { onHand: true } } },
+    });
+    const tally = (pick: (v: (typeof variants)[number]) => string | null) => {
+      const m = new Map<string, { value: string; variants: number; inStock: number }>();
+      for (const v of variants) {
+        const value = pick(v);
+        if (!value) continue;
+        const e = m.get(value) ?? { value, variants: 0, inStock: 0 };
+        e.variants++;
+        e.inStock += v.inventory.reduce((a, l) => a + Math.max(0, l.onHand), 0);
+        m.set(value, e);
+      }
+      return [...m.values()];
+    };
+    return {
+      sizes: tally((v) => v.size).sort((a, b) => compareSizes(a.value, b.value)),
+      grades: tally((v) => v.grade).sort((a, b) => (Number(b.value) || 0) - (Number(a.value) || 0) || a.value.localeCompare(b.value)),
+      gradingCompanies: tally((v) => v.gradingCompany),
+      conditions: tally((v) => v.condition).sort((a, b) => CardConditions.indexOf(a.value as never) - CardConditions.indexOf(b.value as never)),
+      itemConditions: tally((v) => v.itemCondition),
+    };
   });
 
   app.post("/catalog/products", { preHandler: requirePermission("MANAGE_CATALOG") }, async (req) => {
     const input = parse(ProductInput, req.body);
     const { variants, ...product } = input;
-    return prisma.product.create({ data: { ...product, variants: { create: variants } }, include: { variants: true } });
+    const normalized = variants.map((v) => ({
+      ...v,
+      // A slab is one physical card identified by its cert; it isn't priced from the raw-card feed.
+      ...(v.gradingCompany ? { serialized: true, autoPrice: false } : {}),
+      // Sneakers and apparel are new unless said otherwise.
+      ...((NEW_OR_USED_KINDS as readonly string[]).includes(product.kind) && !v.itemCondition ? { itemCondition: "DS" as const } : {}),
+    }));
+    for (const v of normalized) {
+      if (v.gradingCompany && v.certNumber && (await prisma.variant.findFirst({ where: { gradingCompany: v.gradingCompany, certNumber: v.certNumber } }))) {
+        throw conflict("CERT_EXISTS", `${v.gradingCompany} cert ${v.certNumber} is already in inventory`);
+      }
+    }
+    return prisma.product.create({ data: { ...product, variants: { create: normalized } }, include: { variants: true } });
   });
 
   app.get("/catalog/products/:id", staff, async (req) => {
@@ -66,7 +173,7 @@ export function catalogRoutes(app: FastifyInstance, base: Ctx) {
   app.patch("/catalog/products/:id", { preHandler: requirePermission("MANAGE_CATALOG") }, async (req) => {
     const { id } = req.params as { id: string };
     const data = parse(
-      z.object({ title: z.string().min(1).optional(), categoryId: z.string().nullable().optional(), channels: z.array(z.enum(["POS", "STOREFRONT", "SHOPIFY", "TCGPLAYER", "EBAY"])).optional() }),
+      z.object({ title: z.string().min(1).optional(), imageUrl: z.string().url().nullable().optional(), categoryId: z.string().nullable().optional(), channels: z.array(z.enum(["POS", "STOREFRONT", "SHOPIFY", "TCGPLAYER", "EBAY"])).optional() }),
       req.body,
     );
     return prisma.product.update({ where: { id }, data });
@@ -75,7 +182,12 @@ export function catalogRoutes(app: FastifyInstance, base: Ctx) {
   app.patch("/catalog/variants/:id", { preHandler: requirePermission("MANAGE_CATALOG") }, async (req) => {
     const { id } = req.params as { id: string };
     const data = parse(
-      z.object({ priceCents: z.number().int().nonnegative().optional(), autoPrice: z.boolean().optional(), barcode: z.string().optional() }),
+      z.object({
+        priceCents: z.number().int().nonnegative().optional(),
+        autoPrice: z.boolean().optional(),
+        barcode: z.string().optional(),
+        imageUrl: z.string().url().nullable().optional(),
+      }),
       req.body,
     );
     const before = await prisma.variant.findUniqueOrThrow({ where: { id }, include: { product: true } });
