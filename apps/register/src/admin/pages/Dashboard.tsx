@@ -16,6 +16,8 @@ interface Data {
   pendingPayments: number;
   openPurchaseOrders: number;
   transfersInTransit: number;
+  /** Online orders still to fill (absent on servers without fulfillment). */
+  onlineOrders?: { open?: number; new?: number; ready?: number } | null;
 }
 
 /** Today at a glance. */
@@ -31,6 +33,7 @@ export function Dashboard() {
   if (!d) return <Text style={[ui.muted, { padding: 16 }]}>Loading…</Text>;
   const t = d.today;
   const peak = Math.max(1, ...d.hourly.map((h) => h.netCents));
+  const oo = d.onlineOrders ? { open: d.onlineOrders.open ?? 0, new: d.onlineOrders.new ?? 0, ready: d.onlineOrders.ready ?? 0 } : null;
   return (
     <ScrollView contentContainerStyle={{ padding: 12, gap: 12 }}>
       <View style={[ui.row, { flexWrap: "wrap", gap: 10 }]}>
@@ -40,6 +43,7 @@ export function Dashboard() {
         <Stat label="Refunds" value={money(t.refundedCents)} tone={t.refundedCents ? "warn" : undefined} />
         <Stat label="Trade-ins paid" value={money(t.tradeIns.paidCents)} sub={`${t.tradeIns.tickets} tickets`} />
         <Stat label="Needs attention" value={String(d.pendingPayments + d.lowStockCount)} sub={`${d.pendingPayments} card payments · ${d.lowStockCount} low stock`} tone={d.pendingPayments ? "bad" : d.lowStockCount ? "warn" : undefined} />
+        {oo && <Stat label="Online orders" value={String(oo.open)} sub={`${oo.new} new online orders · ${oo.ready} ready for pickup`} tone={oo.new > 0 ? "bad" : oo.ready > 0 ? "good" : undefined} />}
         <Stat label="Purchasing" value={String(d.openPurchaseOrders)} sub={`open orders · ${d.transfersInTransit} transfers in transit`} />
       </View>
 

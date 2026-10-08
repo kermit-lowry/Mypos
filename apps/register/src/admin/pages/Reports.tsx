@@ -7,11 +7,11 @@ import { useSession } from "../../session";
 import { ui } from "../../theme";
 import { Badge, Card, Chips, DateRangePicker, day, downloadCsv, money, pct, Picker, PRESETS, Table, when, type Column, type DateRange } from "../ui";
 
-export type Report = "summary" | "period" | "category" | "kind" | "employee" | "product" | "brand" | "game" | "vendor" | "tenders" | "discounts" | "tax" | "trade-ins" | "no-sales" | "valuation" | "low-stock" | "movements" | "purchases" | "transfers" | "daily-close" | "shifts" | "timesheets" | "employee-shifts" | "layaways";
+export type Report = "summary" | "period" | "category" | "kind" | "employee" | "product" | "brand" | "game" | "vendor" | "tenders" | "discounts" | "tax" | "trade-ins" | "no-sales" | "valuation" | "low-stock" | "movements" | "purchases" | "transfers" | "daily-close" | "shifts" | "timesheets" | "employee-shifts" | "layaways" | "fulfillment";
 
 /** Chips in the order they're shown, under a small heading per group. */
 const GROUPS: [string, [Report, string][]][] = [
-  ["Sales", [["summary", "Sales summary"], ["period", "Sales over time"], ["employee", "By employee"], ["tenders", "Payment types"], ["discounts", "Discounts"], ["tax", "Sales tax"], ["trade-ins", "Trade-ins"]]],
+  ["Sales", [["summary", "Sales summary"], ["period", "Sales over time"], ["employee", "By employee"], ["tenders", "Payment types"], ["discounts", "Discounts"], ["tax", "Sales tax"], ["trade-ins", "Trade-ins"], ["fulfillment", "Online orders"]]],
   ["Items", [["product", "Top items"], ["category", "By category"], ["kind", "By product type"], ["brand", "By brand"], ["game", "By game"], ["vendor", "By vendor"]]],
   ["Stock", [["no-sales", "Dead stock"], ["valuation", "Inventory value"], ["low-stock", "Low stock"], ["movements", "Stock movements"]]],
   ["Purchasing", [["purchases", "Purchases"], ["transfers", "Transfers"]]],
@@ -32,6 +32,9 @@ const NO_FILTER: ItemFilter = { brandId: "", vendorId: "", categoryId: "", kind:
 
 /** Local "YYYY-MM-DD" (toISOString would give the UTC day). */
 const localDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+/** "45 min" / "3 h 05 m" from minutes. */
+const mins = (m: unknown) => (m == null || m === "" || !Number.isFinite(Number(m)) ? "" : Number(m) < 60 ? `${Math.round(Number(m))} min` : `${Math.floor(Number(m) / 60)} h ${String(Math.round(Number(m) % 60)).padStart(2, "0")} m`);
+const FULFILLMENT_TONE: Record<string, "good" | "bad" | "warn" | "muted"> = { NEW: "bad", READY: "good", PROBLEM: "warn", SHIPPED: "muted", PICKED_UP: "muted" };
 /** "short $2.50" / "over $1.00" / "exact". */
 const variance = (c: number | null | undefined) => (c == null ? "" : c === 0 ? "exact" : c < 0 ? `short ${money(-c)}` : `over ${money(c)}`);
 
@@ -91,6 +94,7 @@ export function Reports({ initial = "summary" }: { initial?: Report }) {
       case "timesheets": return `/reports/timesheets${q(dates, loc)}`;
       case "employee-shifts": return `/reports/employee-shifts${q(dates, loc)}`;
       case "layaways": return `/reports/layaways${q(loc)}`;
+      case "fulfillment": return `/reports/fulfillment${q(dates, loc)}`;
       default: return `/reports/sales-by/${report}${q(dates, loc, "limit=500")}`;
     }
   };
@@ -378,6 +382,51 @@ function ReportView({ report, data, filters, by }: { report: Report; data: any; 
                 { key: "o", label: "Overdue", render: (r) => (r.overdue ? <Badge text={r.daysOverdue ? `${r.daysOverdue} day${r.daysOverdue === 1 ? "" : "s"}` : "overdue"} tone="bad" /> : ""), width: 110 },
               ]}
               empty="No active layaways."
+            />
+          </Card>
+        </>
+      );
+    case "fulfillment":
+      return (
+        <>
+          <Card title={`Online orders${data.openNow != null ? ` · ${data.openNow} open now` : ""}`}>
+            <KeyValues obj={{ orders: data.orders ?? (data.rows ?? []).length, done: data.done ?? 0, stillOpen: data.open ?? 0, averageTimeToReady: mins(data.avgMinutesToReady) || "—", averageTimeToDone: mins(data.avgMinutesToDone) || "—" }} />
+          </Card>
+          <Card title="By channel">
+            <Table<any>
+              rows={data.byChannel ?? []}
+              keyOf={(r) => `${r.channel}-${r.method}`}
+              columns={[
+                { key: "c", label: "Channel", render: (r) => String(r.channel ?? "").toLowerCase(), width: 120 },
+                { key: "m", label: "Method", render: (r) => (r.method === "SHIP" ? "Ship" : r.method === "PICKUP" ? "Pickup" : String(r.method ?? "")), width: 80 },
+                { key: "o", label: "Orders", render: (r) => r.orders ?? 0, width: 70, align: "right" },
+                { key: "f", label: "Done", render: (r) => r.done ?? "", width: 60, align: "right" },
+                { key: "p", label: "Open", render: (r) => r.open ?? "", width: 60, align: "right" },
+                { key: "x", label: "Problems", render: (r) => r.problems ?? "", width: 80, align: "right" },
+                { key: "r", label: "Avg. to ready", render: (r) => mins(r.avgMinutesToReady) || "—", width: 110, align: "right" },
+                { key: "d", label: "Avg. to done", render: (r) => mins(r.avgMinutesToDone) || "—", width: 110, align: "right" },
+                { key: "t", label: "Sales", render: (r) => (r.totalCents != null ? money(r.totalCents) : ""), width: 100, align: "right" },
+              ]}
+              empty="No online orders in this range."
+            />
+          </Card>
+          <Card title="Orders">
+            <Table<any>
+              rows={data.rows ?? []}
+              keyOf={(r) => r.id ?? String(r.number)}
+              columns={[
+                { key: "n", label: "Order #", render: (r) => `#${r.number}`, width: 80 },
+                { key: "u", label: "Customer", render: (r) => r.customer ?? "", width: 150 },
+                { key: "c", label: "Channel", render: (r) => String(r.channel ?? "").toLowerCase(), width: 100 },
+                { key: "m", label: "Method", render: (r) => (r.method === "SHIP" ? "Ship" : r.method === "PICKUP" ? "Pickup" : String(r.method ?? "")), width: 80 },
+                { key: "s", label: "Status", render: (r) => (r.status ? <Badge text={String(r.status).toLowerCase().replace(/_/g, " ")} tone={FULFILLMENT_TONE[String(r.status)]} /> : ""), width: 120 },
+                { key: "p", label: "Placed", render: (r) => ((r.created ?? r.createdAt) ? when(r.created ?? r.createdAt) : ""), width: 160 },
+                { key: "r", label: "Ready", render: (r) => ((r.ready ?? r.readyAt) ? when(r.ready ?? r.readyAt) : ""), width: 160 },
+                { key: "d", label: "Done", render: (r) => ((r.done ?? r.doneAt) ? when(r.done ?? r.doneAt) : ""), width: 160 },
+                { key: "t", label: "Time", render: (r) => mins(r.minutes) || (r.minutesToReady != null ? `${mins(r.minutesToReady)} to ready` : ""), width: 120, align: "right" },
+                { key: "v", label: "Total", render: (r) => (r.totalCents != null ? money(r.totalCents) : ""), width: 90, align: "right" },
+              ]}
+              empty="No online orders in this range."
             />
           </Card>
         </>

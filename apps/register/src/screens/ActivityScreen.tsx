@@ -30,6 +30,7 @@ const FILTERS: [string, string, Record<string, string>][] = [
   ["price", "Price changes", { action: "PRICE_CHANGE" }],
   ["refund", "Refunds", { action: "REFUND,PREORDER_CANCELLED" }],
   ["layaway", "Layaway", { action: "LAYAWAY_CREATED,LAYAWAY_PAYMENT,LAYAWAY_COMPLETED,LAYAWAY_CANCELLED,LAYAWAY_EXTENDED" }],
+  ["online", "Online orders", { action: "ORDER_ACKNOWLEDGED,ORDER_PICKED,ORDER_READY,ORDER_SHIPPED,ORDER_PICKED_UP,ORDER_PROBLEM,ORDER_REOPENED" }],
   ["approval", "PIN approvals", { action: "APPROVAL" }],
   ["approval-failed", "Failed PIN approvals", { action: "APPROVAL_FAILED" }],
   ["balances", "Balance adjustments", { action: "BALANCE_ADJUSTED" }],
@@ -68,6 +69,9 @@ const REFUSAL: Record<string, string> = {
   NOT_CLOCKED_IN: "not clocked in",
 };
 const BALANCE_KIND: Record<string, string> = { STORE_CREDIT: "store credit", POINTS: "points", CASHBACK: "rewards" };
+/** "web order", "shopify order", "ebay order"; just "order" when the channel is unknown. */
+const CHANNEL_WORD: Record<string, string> = { STOREFRONT: "web", SHOPIFY: "Shopify", TCGPLAYER: "TCGplayer", EBAY: "eBay" };
+const channelOrder = (c: unknown) => (c ? `${CHANNEL_WORD[String(c)] ?? words(c)} order` : "order");
 
 /** Plain "Added/Changed/Deleted <thing> "<name>"" events, keyed by the action's prefix. */
 const THINGS: Record<string, { noun: string; name: (d: any) => unknown; extra?: (d: any) => string }> = {
@@ -241,6 +245,24 @@ function describe(e: Event): string {
       return `Cancelled layaway #${d.number}: fee ${money(d.feeCents)}, refunded ${money(d.refundedCents)}${d.toStoreCredit ? " to store credit" : tenders(d.legs) ? ` (${tenders(d.legs)})` : ""}${d.reason ? ` (${d.reason})` : ""}`;
     case "LAYAWAY_EXTENDED":
       return `Extended layaway #${d.number} to ${dayOf(d.to)}${d.from ? ` (was ${dayOf(d.from)})` : ""}`;
+    // Online orders
+    case "ORDER_ACKNOWLEDGED":
+      return `Acknowledged ${channelOrder(d.channel)} #${d.orderNumber}`;
+    case "ORDER_PICKED": {
+      const n = Number(d.picked ?? count(d.pickedLineIds)) || 0;
+      const total = d.of != null ? Number(d.of) : null;
+      return `Set aside ${n}${total != null ? ` of ${total}` : ""} item${(total ?? n) === 1 ? "" : "s"} on order #${d.orderNumber}`;
+    }
+    case "ORDER_READY":
+      return `Order #${d.orderNumber} ready ${d.fulfillment === "SHIP" ? "to ship" : "for pickup"}${d.forced ? " (not everything set aside)" : ""}`;
+    case "ORDER_SHIPPED":
+      return `Shipped order #${d.orderNumber}${d.carrier ? ` via ${d.carrier}` : ""}${d.trackingNumber ? ` ${d.trackingNumber}` : ""}${d.note ? ` (${d.note})` : ""}`;
+    case "ORDER_PICKED_UP":
+      return `Order #${d.orderNumber} picked up${d.note ? ` (${d.note})` : ""}`;
+    case "ORDER_PROBLEM":
+      return `Problem with order #${d.orderNumber}${d.note ? `: ${d.note}` : ""}`;
+    case "ORDER_REOPENED":
+      return `Reopened order #${d.orderNumber}${d.note ? ` (${d.note})` : ""}`;
     // Approvals and sign-ins
     case "APPROVAL":
       return `PIN approval for ${perms(d.permissions)}${d.discountBps ? ` (${pct(d.discountBps)} discount)` : ""}${d.reason ? `: ${d.reason}` : ""}`;

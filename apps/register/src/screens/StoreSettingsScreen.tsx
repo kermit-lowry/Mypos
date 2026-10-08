@@ -21,6 +21,14 @@ interface LayawaySettings {
   layawayCancelFeeCents?: number;
   layawayCancelFeeBps?: number;
 }
+/** Online-order options a location carries; optional for the same reason. */
+interface OnlineSettings {
+  onlinePickupEnabled?: boolean;
+  onlineShippingEnabled?: boolean;
+  onlineShippingFlatCents?: number;
+  onlineFreeShippingOverCents?: number | null;
+  pickupInstructions?: string | null;
+}
 /** Whole cents or bps from a decimal field; null when blank or not a number. */
 const hundredths = (s: string) => {
   if (!s.trim()) return null;
@@ -32,7 +40,7 @@ const hundredths = (s: string) => {
 export function StoreSettingsScreen({ onSaved }: { onSaved: (l: Location) => void }) {
   const { location } = useSession();
   const can = useCan();
-  const drawer = location as Location & DrawerSettings & LayawaySettings;
+  const drawer = location as Location & DrawerSettings & LayawaySettings & OnlineSettings;
   const [requireDrawer, setRequireDrawer] = useState(drawer.requireDrawerSession ?? false);
   const [blindCount, setBlindCount] = useState(drawer.blindCashCount ?? true);
   const [varianceAlert, setVarianceAlert] = useState(((drawer.cashVarianceAlertCents ?? 500) / 100).toFixed(2));
@@ -41,6 +49,11 @@ export function StoreSettingsScreen({ onSaved }: { onSaved: (l: Location) => voi
   const [termDays, setTermDays] = useState(String(drawer.layawayTermDays ?? 30));
   const [cancelFee, setCancelFee] = useState(((drawer.layawayCancelFeeCents ?? 0) / 100).toFixed(2));
   const [cancelFeePct, setCancelFeePct] = useState(String((drawer.layawayCancelFeeBps ?? 0) / 100));
+  const [pickup, setPickup] = useState(drawer.onlinePickupEnabled ?? true);
+  const [shipping, setShipping] = useState(drawer.onlineShippingEnabled ?? true);
+  const [flatShipping, setFlatShipping] = useState(((drawer.onlineShippingFlatCents ?? 0) / 100).toFixed(2));
+  const [freeOver, setFreeOver] = useState(drawer.onlineFreeShippingOverCents != null ? (drawer.onlineFreeShippingOverCents / 100).toFixed(2) : "");
+  const [pickupNote, setPickupNote] = useState(drawer.pickupInstructions ?? "");
   const [dual, setDual] = useState(location.cardPriceBps > 0);
   const [percent, setPercent] = useState(location.cardPriceBps > 0 ? String(location.cardPriceBps / 100) : "3.99");
   const [printer, setPrinter] = useState(location.labelPrinterHost ?? "");
@@ -60,7 +73,12 @@ export function StoreSettingsScreen({ onSaved }: { onSaved: (l: Location) => voi
   const daysValid = termDays.trim() !== "" && Number.isFinite(days) && days >= 1 && days <= 365;
   const feeValid = feeCents != null && feeCents >= 0 && feeBps != null && feeBps >= 0 && feeBps <= 10000;
   const layawayValid = !layaway || (depositValid && daysValid && feeValid);
-  const valid = (!dual || (Number.isFinite(bps) && bps > 0 && bps <= 1000)) && alertValid && layawayValid;
+  const flatCents = hundredths(flatShipping);
+  const flatValid = flatCents != null && flatCents >= 0;
+  const freeCents = freeOver.trim() === "" ? null : hundredths(freeOver);
+  const freeValid = freeOver.trim() === "" || (freeCents != null && freeCents >= 0);
+  const onlineValid = !shipping || (flatValid && freeValid);
+  const valid = (!dual || (Number.isFinite(bps) && bps > 0 && bps <= 1000)) && alertValid && layawayValid && onlineValid;
 
   async function save() {
     try {
@@ -78,6 +96,11 @@ export function StoreSettingsScreen({ onSaved }: { onSaved: (l: Location) => voi
         ...(depositValid ? { layawayMinDepositBps: depositBps } : {}),
         ...(daysValid ? { layawayTermDays: days } : {}),
         ...(feeValid ? { layawayCancelFeeCents: feeCents, layawayCancelFeeBps: feeBps } : {}),
+        onlinePickupEnabled: pickup,
+        onlineShippingEnabled: shipping,
+        pickupInstructions: pickupNote.trim() || null,
+        ...(flatValid ? { onlineShippingFlatCents: flatCents } : {}),
+        ...(freeValid ? { onlineFreeShippingOverCents: freeCents } : {}),
       });
       onSaved(updated);
       setMessage("Saved. Reprint shelf labels so they show the new prices.");
@@ -189,6 +212,43 @@ export function StoreSettingsScreen({ onSaved }: { onSaved: (l: Location) => voi
             )}
           </>
         )}
+      </View>
+
+      <View style={[ui.panel, { gap: 12 }]}>
+        <Text style={ui.h2}>Online orders</Text>
+        <Text style={ui.muted}>How web orders reach the customer. Paid orders land in the fulfillment queue on the register and under Orders here.</Text>
+        <View style={[ui.row, { justifyContent: "space-between", gap: 12 }]}>
+          <Text style={[ui.text, { flex: 1 }]}>Offer in-store pickup</Text>
+          <Switch value={pickup} onValueChange={setPickup} />
+        </View>
+        {pickup && (
+          <>
+            <Text style={ui.text}>Pickup instructions</Text>
+            <TextInput style={[ui.input, { minHeight: 70 }]} value={pickupNote} onChangeText={setPickupNote} placeholder="Shown to the customer when they choose pickup, e.g. hours and where to come in" placeholderTextColor={colors.muted} multiline />
+          </>
+        )}
+        <View style={[ui.row, { justifyContent: "space-between", gap: 12 }]}>
+          <Text style={[ui.text, { flex: 1 }]}>Offer shipping</Text>
+          <Switch value={shipping} onValueChange={setShipping} />
+        </View>
+        {shipping && (
+          <>
+            <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
+              <Text style={ui.text}>Flat shipping $</Text>
+              <TextInput style={[ui.input, { width: 90 }]} keyboardType="decimal-pad" value={flatShipping} onChangeText={setFlatShipping} />
+              <Text style={ui.text}>per order, free over $</Text>
+              <TextInput style={[ui.input, { width: 90 }]} keyboardType="decimal-pad" value={freeOver} onChangeText={setFreeOver} placeholder="never" placeholderTextColor={colors.muted} />
+            </View>
+            {flatValid && freeValid ? (
+              <Text style={ui.muted}>
+                {flatCents === 0 ? "Shipping is free on every order." : freeCents != null ? `${formatCents(flatCents)} shipping; free once the order is over ${formatCents(freeCents)}.` : `${formatCents(flatCents)} shipping on every order. Leave the threshold blank for no free shipping.`}
+              </Text>
+            ) : (
+              <Text style={ui.error}>Enter dollar amounts (the free-shipping threshold can be blank).</Text>
+            )}
+          </>
+        )}
+        {!pickup && !shipping && <Text style={[ui.muted, { color: colors.warn }]}>With both off, the website can't take orders for this location.</Text>}
       </View>
 
       <View style={[ui.panel, { gap: 8 }]}>
