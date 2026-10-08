@@ -224,6 +224,30 @@ export const PreorderInput = z.object({
 });
 export type PreorderInput = z.infer<typeof PreorderInput>;
 
+/** Open a layaway: lock the cart's prices, reserve the stock, take the deposit. */
+export const LayawayInput = z.object({
+  locationId: id,
+  customerId: id,
+  lines: z.array(CartLine).min(1),
+  /** Deposit tenders; must reach the location's minimum deposit. */
+  tenders: z.array(TenderInput).min(1),
+  /** Balance due by; defaults to the location's layaway term. */
+  dueAt: z.coerce.date().optional(),
+  notes: z.string().max(1000).optional(),
+  idempotencyKey: z.string().min(8),
+  /** The register taking the deposit (for the card terminal and the cash drawer). */
+  terminalId: id.optional(),
+});
+export type LayawayInput = z.infer<typeof LayawayInput>;
+
+/** A payment toward a layaway's balance. */
+export const LayawayPaymentInput = z.object({
+  tenders: z.array(TenderInput).min(1),
+  idempotencyKey: z.string().min(8),
+  terminalId: id.optional(),
+});
+export type LayawayPaymentInput = z.infer<typeof LayawayPaymentInput>;
+
 export const CustomerInput = z.object({
   name: z.string().min(1),
   email: z.string().email().optional(),

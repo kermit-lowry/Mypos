@@ -39,6 +39,17 @@ model Location {
   /// A closing variance beyond this needs a manager's approval (cents).
   cashVarianceAlertCents Int @default(500)
 
+  // Layaway terms
+  layawayEnabled        Boolean @default(true)
+  /// Minimum deposit as bps of the layaway total (2000 = 20%).
+  layawayMinDepositBps  Int     @default(2000)
+  /// Default days until the balance is due.
+  layawayTermDays       Int     @default(30)
+  /// Cancellation fee: the larger of a flat amount and bps of the total, never more than was paid.
+  layawayCancelFeeCents Int     @default(0)
+  layawayCancelFeeBps   Int     @default(0)
+  layaways              Layaway[]
+
   drawerSessions DrawerSession[]
   timeEntries    TimeEntry[]
   inventory   InventoryLevel[]
@@ -121,6 +132,7 @@ model Customer {
   buylists       BuylistTicket[]
   registrations  EventRegistration[]
   preorders      Preorder[]
+  layaways       Layaway[]
   consignor      Consignor?
   loyalty        LoyaltyEntry[]
 }
@@ -364,6 +376,8 @@ enum MovementReason {
   DAMAGE
   THEFT
   TRANSFER
+  LAYAWAY
+  LAYAWAY_RETURN
   OTHER
 }
 
@@ -628,6 +642,11 @@ model Payment {
   /// Cash drawer session (shift) this payment's cash went into or came out of.
   drawerSessionId String?
   drawerSession   DrawerSession? @relation(fields: [drawerSessionId], references: [id])
+  /// Layaway this payment went toward (the row also gets an orderId once the layaway completes).
+  layawayId    String?
+  layaway      Layaway? @relation(fields: [layawayId], references: [id])
+  /// Layaway payments: the part that reduced the balance; the rest is the card-price adjustment (+ its tax).
+  appliedCents Int?
   /// Set on refund rows: the original payment being refunded.
   refundOfId  String?
   raw         Json?
@@ -1198,4 +1217,79 @@ model TimeEntry {
 
   @@index([staffId, clockIn])
   @@index([locationId, clockIn])
+}
+
+// ─── Layaway ─────────────────────────────────────────────────────
+
+enum LayawayStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+/// Items held for a customer against a deposit and paid off over time. Prices,
+/// deals and tax are locked when it opens; stock is reserved (moved out) until
+/// it is picked up or cancelled. Completing it creates the sale (an Order).
+model Layaway {
+  id         String        @id @default(cuid())
+  number     Int           @unique @default(autoincrement())
+  status     LayawayStatus @default(ACTIVE)
+  locationId String
+  location   Location      @relation(fields: [locationId], references: [id])
+  customerId String
+  customer   Customer      @relation(fields: [customerId], references: [id])
+  staffId    String?
+  idempotencyKey String?   @unique
+  /// Cash-price totals locked at creation.
+  subtotalCents Int
+  discountCents Int        @default(0)
+  taxCents      Int
+  totalCents    Int
+  /// Card markup in effect when it opened.
+  cardPriceBps  Int        @default(0)
+  /// What card payments added over the cash price so far, and the tax on that.
+  cardAdjustmentCents    Int @default(0)
+  cardAdjustmentTaxCents Int @default(0)
+  /// Sum of payments applied to the balance (not counting card adjustments).
+  paidCents     Int        @default(0)
+  /// Deals applied at creation: [{ promotionId, name, discountCents }].
+  appliedPromotions Json   @default("[]")
+  dueAt         DateTime
+  notes         String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  completedAt   DateTime?
+  /// The sale created when the layaway was paid off and picked up.
+  orderId       String?    @unique
+  cancelledAt   DateTime?
+  cancelledById String?
+  cancelFeeCents Int       @default(0)
+  /// What went back to the customer on cancellation (original tenders or store credit).
+  refundedCents  Int       @default(0)
+  cancelReason   String?
+
+  lines    LayawayLine[]
+  payments Payment[]
+
+  @@index([locationId, status])
+  @@index([customerId])
+  @@index([dueAt])
+}
+
+model LayawayLine {
+  id             String  @id @default(cuid())
+  layawayId      String
+  layaway        Layaway @relation(fields: [layawayId], references: [id], onDelete: Cascade)
+  variantId      String
+  title          String
+  quantity       Int
+  unitPriceCents Int
+  /// Total discount on the line, including deals.
+  discountCents       Int @default(0)
+  promoDiscountCents  Int @default(0)
+  discountReasonId    String?
+  discountReason      String?
+  taxable        Boolean
+  /// Unit cost when reserved (for profit on the eventual sale).
+  costCents      Int?
 }
