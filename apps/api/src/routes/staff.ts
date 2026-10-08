@@ -31,6 +31,7 @@ const publicStaff = (s: Staff) => ({
   permissionOverrides: s.permissionOverrides,
   discountMaxBps: s.discountMaxBps,
   hasPin: !!s.pinLookup,
+  hasPassword: !!s.passwordHash,
   createdAt: s.createdAt,
 });
 
@@ -69,6 +70,42 @@ export function staffRoutes(app: FastifyInstance, base: Ctx) {
     clearFailures(key);
     await audit(prisma, { action: "LOGIN", staffId: staff.id, ip: ip(req), details: { method: email ? "email+pin" : "pin" } });
     return session(staff);
+  });
+
+  /**
+   * Back-office website sign-in: email + password (PINs are for the register).
+   * Needs the BACK_OFFICE_LOGIN permission.
+   */
+  app.post("/auth/web-login", async (req) => {
+    const { email, password } = parse(z.object({ email: z.string().email(), password: z.string().min(1).max(200) }), req.body);
+    const key = `web-login:${ip(req)}`;
+    checkAttempts(key);
+    const staff = await prisma.staff.findUnique({ where: { email } });
+    const ok = staff?.active && staff.passwordHash && (await bcrypt.compare(password, staff.passwordHash));
+    if (!ok) {
+      recordFailure(key);
+      await audit(prisma, { action: "LOGIN_FAILED", ip: ip(req), details: { email, method: "web" } });
+      throw new AppError(401, "BAD_LOGIN", staff && !staff.passwordHash ? "No website password set for this account yet; an owner can set one" : "Wrong email or password");
+    }
+    const perms = await permissionsFor(prisma, staff!);
+    if (perms.levels.BACK_OFFICE_LOGIN === "DENY") {
+      await audit(prisma, { action: "LOGIN_FAILED", staffId: staff!.id, ip: ip(req), details: { method: "web", reason: "no back-office access" } });
+      throw forbidden("This account can't use the back office");
+    }
+    clearFailures(key);
+    await audit(prisma, { action: "LOGIN", staffId: staff!.id, ip: ip(req), details: { method: "web" } });
+    return session(staff!);
+  });
+
+  /** Change your own website password (confirm with the current password, or your PIN if none is set). */
+  app.post("/auth/password", { preHandler: requireStaff() }, async (req) => {
+    const { current, password } = parse(z.object({ current: z.string().min(1), password: z.string().min(10).max(200) }), req.body);
+    const me = await prisma.staff.findUniqueOrThrow({ where: { id: req.user.sub } });
+    const ok = me.passwordHash ? await bcrypt.compare(current, me.passwordHash) : await bcrypt.compare(current, me.pinHash);
+    if (!ok) throw new AppError(401, "BAD_LOGIN", me.passwordHash ? "Current password is wrong" : "PIN is wrong");
+    await prisma.staff.update({ where: { id: me.id }, data: { passwordHash: await bcrypt.hash(password, 10) } });
+    await audit(prisma, { action: "PASSWORD_CHANGED", staffId: me.id, ip: ip(req) });
+    return { ok: true };
   });
 
   app.get("/auth/me", { preHandler: requireStaff() }, async (req) => {
@@ -138,6 +175,8 @@ export function staffRoutes(app: FastifyInstance, base: Ctx) {
         name: z.string().min(1).max(80).optional(),
         email: z.string().email().optional(),
         pin: z.string().optional(),
+        /** Website password (owners set it for staff; staff can change their own). */
+        password: z.string().min(10).max(200).optional(),
         role: z.enum(["OWNER", "MANAGER", "CASHIER"]).optional(),
         active: z.boolean().optional(),
         discountMaxBps: z.number().int().min(0).max(10_000).nullable().optional(),
@@ -149,9 +188,12 @@ export function staffRoutes(app: FastifyInstance, base: Ctx) {
     if (!existing) throw notFound("Employee");
     guardGrant(req, { role: input.role, overrides: input.permissionOverrides }, existing);
     await assertOwnerRemains(existing, input);
-    const { pin, ...rest } = input;
-    const staff = await prisma.staff.update({ where: { id }, data: { ...rest, ...(pin ? await hashPin(prisma, pin, id) : {}) } });
-    await audit(prisma, { action: "STAFF_UPDATED", staffId: req.user.sub, details: { target: id, fields: Object.keys(input).filter((k) => k !== "pin").concat(pin ? ["pin"] : []) } });
+    const { pin, password, ...rest } = input;
+    const staff = await prisma.staff.update({
+      where: { id },
+      data: { ...rest, ...(pin ? await hashPin(prisma, pin, id) : {}), ...(password ? { passwordHash: await bcrypt.hash(password, 10) } : {}) },
+    });
+    await audit(prisma, { action: "STAFF_UPDATED", staffId: req.user.sub, details: { target: id, fields: Object.keys(input).filter((k) => k !== "pin" && k !== "password").concat(pin ? ["pin"] : [], password ? ["password"] : []) } });
     return publicStaff(staff);
   });
 

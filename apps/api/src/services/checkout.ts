@@ -227,6 +227,7 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
             discountNote: reasonFor.has(i) ? p.discountNote : undefined,
             earnsLoyalty: !!input.customerId && program.enabled && earns(program, p.variant.product.kind),
             taxable: p.taxable,
+            costCents: p.variant.costCents,
           },
         });
         lineIds.push(line.id);

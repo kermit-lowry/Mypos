@@ -11,6 +11,8 @@ import { catalogRoutes } from "./routes/catalog.js";
 import { dealRoutes } from "./routes/deals.js";
 import { loyaltyRoutes } from "./routes/loyalty.js";
 import { pricingRoutes } from "./routes/pricing.js";
+import { purchasingRoutes } from "./routes/purchasing.js";
+import { reportRoutes } from "./routes/reports.js";
 import { salesRoutes } from "./routes/sales.js";
 import { staffRoutes } from "./routes/staff.js";
 import { storefrontRoutes } from "./routes/storefront.js";
@@ -50,6 +52,8 @@ export async function buildApp(deps: { prisma: PrismaClient; gateway: PaymentGat
   terminalRoutes(app, ctx);
   pricingRoutes(app, ctx);
   dealRoutes(app, ctx);
+  purchasingRoutes(app, ctx);
+  reportRoutes(app, ctx);
   storefrontRoutes(app, ctx, {
     // Web orders ship from the first location until per-location fulfillment is configured.
     fulfillmentLocationId: async () => (await deps.prisma.location.findFirstOrThrow({ orderBy: { createdAt: "asc" } })).id,

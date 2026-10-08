@@ -28,6 +28,10 @@ model Location {
   receiptFooter String?
   createdAt  DateTime @default(now())
 
+  active     Boolean  @default(true)
+  address    String?
+  phone      String?
+
   inventory   InventoryLevel[]
   movements   InventoryMovement[]
   orders      Order[]
@@ -35,6 +39,9 @@ model Location {
   events      Event[]
   terminals   Terminal[]
   consignment ConsignmentItem[]
+  purchaseOrders PurchaseOrder[]
+  transfersOut   Transfer[] @relation("TransferFrom")
+  transfersIn    Transfer[] @relation("TransferTo")
 }
 
 model Staff {
@@ -43,6 +50,8 @@ model Staff {
   email     String    @unique
   /// bcrypt hash of the register PIN.
   pinHash   String
+  /// bcrypt hash of the back-office website password (register uses the PIN).
+  passwordHash String?
   /// HMAC of the PIN (server secret), so a PIN alone finds its employee for
   /// PIN sign-in and manager approvals. Makes PINs unique per store.
   pinLookup String?   @unique
@@ -258,6 +267,8 @@ model Variant {
   movements      InventoryMovement[]
   orderLines     OrderLine[]
   priceHistory   PricePoint[]
+  purchaseLines  PurchaseOrderLine[]
+  transferLines  TransferLine[]
   authentication Authentication[]
   consignment    ConsignmentItem[]
   preorder       PreorderProduct?
@@ -285,6 +296,8 @@ model InventoryLevel {
   onHand     Int      @default(0)
   /// Held for unpaid online carts / preorders.
   reserved   Int      @default(0)
+  /// Reorder when on hand drops to this; null = don't flag.
+  lowStockQty Int?
   updatedAt  DateTime @updatedAt
 
   @@id([variantId, locationId])
@@ -302,6 +315,100 @@ enum MovementReason {
   THEFT
   TRANSFER
   OTHER
+}
+
+// ─── Purchasing & transfers ──────────────────────────────────────
+
+model Vendor {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  email     String?
+  phone     String?
+  notes     String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  purchaseOrders PurchaseOrder[]
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  ORDERED
+  PARTIAL
+  RECEIVED
+  CANCELLED
+}
+
+model PurchaseOrder {
+  id         String              @id @default(cuid())
+  number     Int                 @unique @default(autoincrement())
+  status     PurchaseOrderStatus @default(DRAFT)
+  vendorId   String
+  vendor     Vendor              @relation(fields: [vendorId], references: [id])
+  locationId String
+  location   Location            @relation(fields: [locationId], references: [id])
+  reference  String?
+  notes      String?
+  expectedAt DateTime?
+  orderedAt  DateTime?
+  receivedAt DateTime?
+  createdById String?
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  lines PurchaseOrderLine[]
+}
+
+model PurchaseOrderLine {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  variantId       String
+  variant         Variant       @relation(fields: [variantId], references: [id])
+  quantity        Int
+  receivedQty     Int           @default(0)
+  unitCostCents   Int
+
+  @@unique([purchaseOrderId, variantId])
+}
+
+enum TransferStatus {
+  DRAFT
+  SENT
+  RECEIVED
+  CANCELLED
+}
+
+/// Stock moving between locations. Sending takes it out of the source;
+/// receiving puts it into the destination (in between it's "in transit").
+model Transfer {
+  id             String         @id @default(cuid())
+  number         Int            @unique @default(autoincrement())
+  status         TransferStatus @default(DRAFT)
+  fromLocationId String
+  fromLocation   Location       @relation("TransferFrom", fields: [fromLocationId], references: [id])
+  toLocationId   String
+  toLocation     Location       @relation("TransferTo", fields: [toLocationId], references: [id])
+  notes          String?
+  sentAt         DateTime?
+  receivedAt     DateTime?
+  createdById    String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  lines TransferLine[]
+}
+
+model TransferLine {
+  id          String   @id @default(cuid())
+  transferId  String
+  transfer    Transfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  variantId   String
+  variant     Variant  @relation(fields: [variantId], references: [id])
+  quantity    Int
+  receivedQty Int      @default(0)
+
+  @@unique([transferId, variantId])
 }
 
 /// Append-only audit trail for every inventory change.
@@ -397,6 +504,8 @@ model OrderLine {
   discountNote     String?
   /// Whether this line counted toward loyalty earning.
   earnsLoyalty   Boolean @default(false)
+  /// Unit cost when sold (for profit reports).
+  costCents      Int?
   taxable        Boolean
   refundedQty    Int     @default(0)
   /// Set when the line sold a consigned unit.
