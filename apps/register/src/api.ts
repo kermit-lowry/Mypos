@@ -223,3 +223,98 @@ export async function apiText(method: "GET" | "POST", path: string, body?: unkno
   }
   return text;
 }
+
+// ─── Cash drawer sessions (shifts) and the time clock ────────────
+
+export type CashMovementKind = "PAID_IN" | "PAID_OUT" | "DROP";
+
+/** Cash put in or taken out of a drawer besides sales. Amount is always positive. */
+export interface CashMovement {
+  id: string;
+  kind: CashMovementKind;
+  amountCents: number;
+  reason: string;
+  note?: string | null;
+  createdAt: string;
+  staff?: { name: string } | null;
+}
+
+/** Denomination counts, cents → how many (e.g. { "2000": 5, "25": 40 }). */
+export type CashCounts = Record<string, number>;
+
+/** Where the cash in the drawer should have come from, if the store isn't blind-counting. */
+export interface DrawerExpected {
+  openingFloatCents: number;
+  cashSalesCents: number;
+  cashRefundsCents: number;
+  tradeInCashCents: number;
+  paidInCents: number;
+  paidOutCents: number;
+  dropCents: number;
+  expectedCents: number;
+}
+
+/** The X report while a drawer is open; the stored closing (Z) report once closed. */
+export interface DrawerReport {
+  openingFloatCents?: number;
+  cashSalesCents?: number;
+  cashRefundsCents?: number;
+  tradeInCashCents?: number;
+  paidInCents?: number;
+  paidOutCents?: number;
+  dropCents?: number;
+  expectedCents?: number;
+  sales?: {
+    orders: number;
+    units: number;
+    grossCents: number;
+    discountCents: number;
+    netSalesCents: number;
+    taxCents: number;
+    collectedCents: number;
+    refundedCents: number;
+  };
+  tenders?: { tender: string; count: number; netCents: number }[];
+  tradeIns?: { tickets?: number; cashCents?: number; creditCents?: number; [k: string]: unknown };
+  byEmployee?: { staff: string; orders: number; netCents: number }[];
+}
+
+/** One cash drawer from "start shift" to "close". */
+export interface DrawerSession {
+  id: string;
+  number: number;
+  status: "OPEN" | "CLOSED";
+  terminalId: string | null;
+  openedAt: string;
+  openedById: string | null;
+  openedBy?: { name: string } | null;
+  openingFloatCents: number;
+  openingCount?: CashCounts | null;
+  closedAt?: string | null;
+  closedBy?: { name: string } | null;
+  expectedCashCents?: number | null;
+  countedCashCents?: number | null;
+  /** counted − expected (negative = short). */
+  varianceCents?: number | null;
+  closingCount?: CashCounts | null;
+  closingReport?: DrawerReport | null;
+  notes?: string | null;
+  movements?: CashMovement[];
+  /** Present on GET /drawer/:id. */
+  expected?: DrawerExpected | null;
+  report?: DrawerReport | null;
+}
+
+export interface DrawerSettings {
+  requireDrawerSession: boolean;
+  blindCashCount: boolean;
+  cashVarianceAlertCents: number;
+}
+
+/** Time clock: one row per clock-in, closed by the clock-out. */
+export interface TimeEntry {
+  id: string;
+  clockIn: string;
+  clockOut?: string | null;
+  breakMinutes?: number;
+}

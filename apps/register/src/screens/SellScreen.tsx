@@ -432,7 +432,8 @@ export function SellScreen() {
           customer={customer}
           onCancel={() => setTendering(false)}
           submit={async (tenders, idempotencyKey) => {
-            const body = { locationId: location.id, customerId: customer?.id, lines: cartLines, tenders, idempotencyKey, rewardIds };
+            // The register's terminal id puts cash into this register's drawer session.
+            const body = { locationId: location.id, customerId: customer?.id, lines: cartLines, tenders, idempotencyKey, rewardIds, terminalId: terminalState.terminal?.id };
             try {
               return await api("POST", "/orders/checkout", body, { approvalToken: discountApproval });
             } catch (e) {
@@ -592,7 +593,15 @@ function TenderSheet(props: {
         }
       }
     } catch (e) {
-      setError(e instanceof ApiError ? (e.code === "PERMISSION_DENIED" ? deniedMessage(e) : e.message) : String(e));
+      setError(
+        e instanceof ApiError
+          ? e.code === "PERMISSION_DENIED"
+            ? deniedMessage(e)
+            : e.code === "DRAWER_CLOSED"
+              ? "Start a shift (Shift tab) before taking cash"
+              : e.message
+          : String(e),
+      );
       // Declines, unknown outcomes, and validation errors closed out this attempt;
       // only a network failure leaves it open to retry with the same key.
       if (!(e instanceof ApiError && e.code === "NETWORK")) setIdempotencyKey(Crypto.randomUUID());

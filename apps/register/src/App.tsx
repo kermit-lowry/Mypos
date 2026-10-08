@@ -14,6 +14,7 @@ import { LabelsScreen } from "./screens/LabelsScreen";
 import { LoginScreen } from "./screens/LoginScreen";
 import { LoyaltySettingsScreen } from "./screens/LoyaltySettingsScreen";
 import { SellScreen } from "./screens/SellScreen";
+import { clockLabel, ShiftScreen, useClockStatus } from "./screens/ShiftScreen";
 import { StoreSettingsScreen } from "./screens/StoreSettingsScreen";
 import { useLayout } from "./layout";
 import type { EffectivePermissions, Permission } from "@mypos/shared";
@@ -22,17 +23,19 @@ import { CartProvider, useCart, useClearCart } from "./cart";
 import { ActivityScreen } from "./screens/ActivityScreen";
 import { StaffScreen } from "./screens/StaffScreen";
 import { SessionContext, useCan, useSession, type Session, type Staff } from "./session";
+import * as storage from "./storage";
 import { colors, ui } from "./theme";
 
-const TABS = ["Sell", "Buylist", "Events", "Labels", "Deals", "Activity", "Staff", "Store", "Loyalty", "Display"] as const;
+const TABS = ["Sell", "Shift", "Buylist", "Events", "Labels", "Deals", "Activity", "Staff", "Store", "Loyalty", "Display"] as const;
 type Tab = (typeof TABS)[number];
-/** Back-office tabs, shown to employees who have the permission (ALLOW or PIN). */
-const TAB_PERMISSION: Partial<Record<Tab, Permission>> = {
-  Deals: "MANAGE_DEALS",
-  Activity: "VIEW_REPORTS",
-  Staff: "MANAGE_STAFF",
-  Store: "MANAGE_SETTINGS",
-  Loyalty: "MANAGE_LOYALTY",
+/** Gated tabs, shown to employees who have any of the permissions (ALLOW or PIN). */
+const TAB_PERMISSION: Partial<Record<Tab, Permission[]>> = {
+  Shift: ["DRAWER_OPEN_CLOSE", "CASH_IN_OUT"],
+  Deals: ["MANAGE_DEALS"],
+  Activity: ["VIEW_REPORTS"],
+  Staff: ["MANAGE_STAFF"],
+  Store: ["MANAGE_SETTINGS"],
+  Loyalty: ["MANAGE_LOYALTY"],
 };
 
 function RegisterApp() {
@@ -76,7 +79,10 @@ function RegisterApp() {
         <LoginScreen
           onSignedIn={(staff: Staff, permissions: EffectivePermissions, locations: Location[]) => {
             const location = locations[0];
-            if (location) setSession({ staff, permissions, location });
+            if (!location) return;
+            // The login screen's clock in/out needs the store before anyone signs in.
+            void storage.setItem("locationId", location.id);
+            setSession({ staff, permissions, location });
           }}
         />
       </SafeAreaProvider>
@@ -85,8 +91,8 @@ function RegisterApp() {
 
   const value = { ...session, signOut };
   const visible = TABS.filter((t) => {
-    const p = TAB_PERMISSION[t];
-    return !p || session.permissions.levels[p] !== "DENY";
+    const ps = TAB_PERMISSION[t];
+    return !ps || ps.some((p) => session.permissions.levels[p] !== "DENY");
   });
 
   return (
@@ -118,10 +124,12 @@ function RegisterApp() {
                       {session.staff.name} · {session.location.name}
                     </Text>
                   )}
+                  <ClockBadge />
                   <SignOutButton onNotice={setSignOutNotice} />
                 </View>
                 {signOutNotice && <Text style={[ui.error, { paddingHorizontal: narrow ? 8 : 16, paddingTop: 4 }]}>{signOutNotice}</Text>}
                 {tab === "Sell" && <SellScreen />}
+                {tab === "Shift" && <ShiftScreen />}
                 {tab === "Buylist" && <BuylistScreen />}
                 {tab === "Events" && <EventsScreen />}
                 {tab === "Labels" && <LabelsScreen />}
@@ -137,6 +145,13 @@ function RegisterApp() {
       </SessionContext.Provider>
     </SafeAreaProvider>
   );
+}
+
+/** "Clocked in 3 h 12 m" / "Not clocked in" beside the employee's name; one small request a minute. */
+function ClockBadge() {
+  const status = useClockStatus();
+  if (!status) return null;
+  return <Text style={[ui.muted, status.entry ? { color: colors.good } : null]}>{clockLabel(status)}</Text>;
 }
 
 /**
