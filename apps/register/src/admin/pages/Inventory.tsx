@@ -1,7 +1,7 @@
 import { CardConditions, CardFinishes, ItemConditions, ProductKinds, formatCents, type ProductKind } from "@mypos/shared";
 import { useEffect, useState } from "react";
 import { Platform, ScrollView, Switch, Text, View } from "react-native";
-import { api, ApiError, apiText, type Product, type Variant } from "../../api";
+import { api, ApiError, apiText, type Brand, type Product, type ProductVendor, type Variant, type Vendor } from "../../api";
 import { NotPermitted, useGuard } from "../../approval";
 import { Button } from "../../components/Button";
 import { MarketBadge } from "../../components/MarketBadge";
@@ -10,7 +10,10 @@ import { SplitPane } from "../../components/SplitPane";
 import { Thumb } from "../../components/Thumb";
 import { useCan, useSession } from "../../session";
 import { colors, ui } from "../../theme";
-import { Card, Chips, Field, Input, money, Table, when } from "../ui";
+import { Badge, Card, Chips, Field, Input, money, Picker, Table, when } from "../ui";
+import { BrandInput } from "./inventory/BrandInput";
+import { Brands } from "./inventory/Brands";
+import { ProductVendors } from "./inventory/ProductVendors";
 
 interface Category {
   id: string;
@@ -18,11 +21,16 @@ interface Category {
 }
 
 /** Items and stock: find anything, edit prices and details, adjust counts, print labels, add products. */
-export function Inventory() {
+export function Inventory({ view = "items" }: { view?: "items" | "brands" }) {
   const [picked, setPicked] = useState<{ product: Product; variant: Variant } | null>(null);
   const [adding, setAdding] = useState(false);
   const [showRight, setShowRight] = useState(false);
+  // "Find items" on the Brands page: the items view, narrowed to that brand.
+  const [brandFilter, setBrandFilter] = useState<Brand | null>(null);
   const can = useCan();
+  useEffect(() => setBrandFilter(null), [view]);
+
+  if (view === "brands" && !brandFilter) return <Brands onFind={setBrandFilter} />;
   return (
     <SplitPane
       leftLabel="Find"
@@ -31,8 +39,17 @@ export function Inventory() {
       onToggle={setShowRight}
       left={
         <View style={{ flex: 1, gap: 8 }}>
+          {brandFilter && (
+            <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
+              <Badge text={`Brand: ${brandFilter.name}`} />
+              <Button title="← Brands" kind="secondary" onPress={() => setBrandFilter(null)} style={{ minHeight: 32, paddingVertical: 4, paddingHorizontal: 10 }} />
+            </View>
+          )}
           {can("MANAGE_CATALOG") !== "DENY" && <Button title="+ New product" kind="secondary" onPress={() => (setAdding(true), setShowRight(true))} />}
           <ProductSearch
+            key={brandFilter?.id ?? "all"}
+            extraQuery={brandFilter ? `brands=${encodeURIComponent(brandFilter.id)}` : undefined}
+            placeholder={brandFilter ? `Search ${brandFilter.name} items…` : undefined}
             onPick={(product, variant) => {
               setPicked({ product, variant });
               setAdding(false);
@@ -54,6 +71,8 @@ export function Inventory() {
   );
 }
 
+const isWear = (kind: string) => kind === "SNEAKER" || kind === "APPAREL";
+
 function ItemEditor({ product, variant, onChanged }: { product: Product; variant: Variant; onChanged: (p: Product, v: Variant) => void }) {
   const { location } = useSession();
   const can = useCan();
@@ -64,9 +83,12 @@ function ItemEditor({ product, variant, onChanged }: { product: Product; variant
   const [autoPrice, setAutoPrice] = useState(!!variant.autoPrice);
   const [image, setImage] = useState(variant.imageUrl ?? "");
   const [title, setTitle] = useState(product.title);
+  const [brand, setBrand] = useState(product.brand ?? "");
+  const [styleCode, setStyleCode] = useState(product.styleCode ?? "");
   const [categoryId, setCategoryId] = useState<string | null>(product.categoryId ?? null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [channels, setChannels] = useState<string[]>(product.channels ?? ["POS"]);
+  const [vendors, setVendors] = useState<ProductVendor[]>(product.vendors ?? []);
   const [delta, setDelta] = useState("");
   const [reason, setReason] = useState("RECEIVE");
   const [lowStock, setLowStock] = useState("");
@@ -77,7 +99,8 @@ function ItemEditor({ product, variant, onChanged }: { product: Product; variant
   useEffect(() => {
     api<Category[]>("GET", "/categories").then(setCategories).catch(() => undefined);
     api("GET", `/inventory/${variant.id}/history`).then(setHistory).catch(() => undefined);
-  }, [variant.id]);
+    api<ProductVendor[]>("GET", `/catalog/products/${product.id}/vendors`).then(setVendors).catch(() => undefined);
+  }, [variant.id, product.id]);
 
   const run = async (fn: () => Promise<unknown>, ok: string) => {
     setMessage(null);
@@ -89,6 +112,7 @@ function ItemEditor({ product, variant, onChanged }: { product: Product; variant
     }
   };
 
+  const wear = isWear(product.kind);
   const saveDetails = () =>
     run(async () => {
       const cents = Math.round(Number(price) * 100);
@@ -99,9 +123,20 @@ function ItemEditor({ product, variant, onChanged }: { product: Product; variant
         autoPrice,
         imageUrl: image.trim() || null,
       });
-      const p = await api<Product>("PATCH", `/catalog/products/${product.id}`, { title: title.trim(), categoryId, channels });
+      const p = await api<Product>("PATCH", `/catalog/products/${product.id}`, {
+        title: title.trim(),
+        categoryId,
+        channels,
+        brand: brand.trim() || null,
+        ...(wear ? { styleCode: styleCode.trim() || null } : {}),
+      });
       onChanged({ ...product, ...p, variants: product.variants }, { ...variant, ...v });
     }, "Saved");
+
+  const vendorsChanged = (list: ProductVendor[]) => {
+    setVendors(list);
+    onChanged({ ...product, vendors: list }, variant);
+  };
 
   const adjust = () =>
     run(async () => {
@@ -128,14 +163,26 @@ function ItemEditor({ product, variant, onChanged }: { product: Product; variant
     }, "Label sent to print");
 
   const canEdit = can("MANAGE_CATALOG") !== "DENY";
+  const supplier = vendors.find((v) => v.preferred) ?? vendors[0];
   return (
     <ScrollView contentContainerStyle={{ gap: 12 }}>
       <View style={[ui.row, { gap: 12 }]}>
         <Thumb uri={imageOf(product, variant)} title={product.title} size={64} />
         <View style={{ flex: 1 }}>
           <Text style={ui.h2}>{product.title}</Text>
-          <Text style={ui.muted}>{variantLabel(variant)} · {variant.sku}</Text>
+          <Text style={ui.muted}>
+            {variantLabel(variant)} · {variant.sku}
+            {product.brand ? ` · ${product.brand}` : ""}
+          </Text>
           <MarketBadge market={variant.market} />
+          {supplier && (
+            <Text style={ui.muted}>
+              {supplier.preferred ? "Preferred vendor: " : "Vendor: "}
+              {supplier.vendor?.name ?? "…"}
+              {supplier.costCents != null ? ` · ${money(supplier.costCents)}` : ""}
+              {vendors.length > 1 ? ` · +${vendors.length - 1} more` : ""}
+            </Text>
+          )}
           <Text style={[ui.text, { marginTop: 4 }]}>
             {onHand} on hand at {location.name}
           </Text>
@@ -155,6 +202,10 @@ function ItemEditor({ product, variant, onChanged }: { product: Product; variant
           </View>
         )}
         <Field label="Product name"><Input value={title} onChange={setTitle} /></Field>
+        <View style={[ui.row, { gap: 8, flexWrap: "wrap", alignItems: "flex-start" }]}>
+          <BrandInput value={brand} onChange={setBrand} />
+          {wear && <Field label="Style code"><Input value={styleCode} onChange={setStyleCode} placeholder="e.g. DD1391-100" /></Field>}
+        </View>
         <Field label="Photo URL (this item)"><Input value={image} onChange={setImage} placeholder="https://…" /></Field>
         <Text style={ui.muted}>Category</Text>
         <Chips options={[["", "None"], ...categories.map((c) => [c.id, c.path] as [string, string])]} value={categoryId ?? ""} onChange={(v) => setCategoryId(v || null)} />
@@ -166,6 +217,8 @@ function ItemEditor({ product, variant, onChanged }: { product: Product; variant
         </View>
         {canEdit ? <Button title="Save" kind="good" onPress={saveDetails} /> : <Text style={ui.muted}>You can't edit items.</Text>}
       </Card>
+
+      <ProductVendors productId={product.id} vendors={vendors} onChange={vendorsChanged} canEdit={canEdit} />
 
       <Card title="Stock">
         <View style={[ui.row, { gap: 8, flexWrap: "wrap", alignItems: "flex-end" }]}>
@@ -196,6 +249,7 @@ function NewProduct({ onDone }: { onDone: () => void }) {
   const [kind, setKind] = useState<ProductKind>("TCG_SINGLE");
   const [title, setTitle] = useState("");
   const [brand, setBrand] = useState("");
+  const [styleCode, setStyleCode] = useState("");
   const [sku, setSku] = useState("");
   const [price, setPrice] = useState("");
   const [cost, setCost] = useState("");
@@ -206,13 +260,18 @@ function NewProduct({ onDone }: { onDone: () => void }) {
   const [itemCondition, setItemCondition] = useState("DS");
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [vendorId, setVendorId] = useState("");
+  const [vendorSku, setVendorSku] = useState("");
+  const [vendorCost, setVendorCost] = useState("");
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     api<Category[]>("GET", "/categories").then(setCategories).catch(() => undefined);
+    api<Vendor[]>("GET", "/vendors").then((v) => setVendors(v.filter((x) => x.active))).catch(() => undefined);
   }, []);
 
   const card = kind === "TCG_SINGLE";
-  const wear = kind === "SNEAKER" || kind === "APPAREL";
+  const wear = isWear(kind);
 
   async function save() {
     setError(null);
@@ -221,6 +280,7 @@ function NewProduct({ onDone }: { onDone: () => void }) {
         kind,
         title: title.trim(),
         brand: brand.trim() || undefined,
+        styleCode: wear && styleCode.trim() ? styleCode.trim() : undefined,
         categoryId,
         channels: ["POS", "STOREFRONT"],
         variants: [
@@ -232,6 +292,7 @@ function NewProduct({ onDone }: { onDone: () => void }) {
             ...(wear ? { size: size.trim() || undefined, itemCondition } : {}),
           },
         ],
+        vendors: vendorId ? [{ vendorId, vendorSku: vendorSku.trim() || undefined, costCents: vendorCost.trim() ? Math.round(Number(vendorCost) * 100) : undefined, preferred: true }] : undefined,
       });
       const n = Number(qty);
       if (Number.isInteger(n) && n > 0) await api("POST", "/inventory/adjust", { variantId: p.variants[0]!.id, locationId: location.id, delta: n, reason: "RECEIVE" });
@@ -247,9 +308,10 @@ function NewProduct({ onDone }: { onDone: () => void }) {
       <Text style={ui.muted}>For cards, the trade-in screen can import from Scryfall/Pokémon TCG with prices and photos; this form is for everything else.</Text>
       <Chips options={ProductKinds.filter((k) => k !== "EVENT_ENTRY").map((k) => [k, k.replace("TCG_", "").replace("_", " ").toLowerCase().replace(/^./, (c) => c.toUpperCase())])} value={kind} onChange={(k) => setKind(k as ProductKind)} />
       <Field label="Name"><Input value={title} onChange={setTitle} /></Field>
-      <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
-        <Field label="Brand"><Input value={brand} onChange={setBrand} /></Field>
+      <View style={[ui.row, { gap: 8, flexWrap: "wrap", alignItems: "flex-start" }]}>
+        <BrandInput value={brand} onChange={setBrand} />
         <Field label="SKU"><Input value={sku} onChange={setSku} /></Field>
+        {wear && <Field label="Style code"><Input value={styleCode} onChange={setStyleCode} placeholder="optional" /></Field>}
       </View>
       <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
         <Field label="Price ($)"><Input value={price} onChange={setPrice} keyboard="decimal-pad" /></Field>
@@ -273,6 +335,17 @@ function NewProduct({ onDone }: { onDone: () => void }) {
       )}
       <Text style={ui.muted}>Category</Text>
       <Chips options={[["", "None"], ...categories.map((c) => [c.id, c.path] as [string, string])]} value={categoryId ?? ""} onChange={(v) => setCategoryId(v || null)} />
+      {vendors.length > 0 && (
+        <View style={[ui.row, { gap: 8, flexWrap: "wrap" }]}>
+          <Picker label="Vendor" options={vendors.map((v) => [v.id, v.name] as [string, string])} value={vendorId} onChange={setVendorId} noneLabel="None" placeholder="None" />
+          {vendorId ? (
+            <>
+              <Field label="Vendor SKU"><Input value={vendorSku} onChange={setVendorSku} placeholder="their item #" /></Field>
+              <Field label="Vendor cost ($)"><Input value={vendorCost} onChange={setVendorCost} keyboard="decimal-pad" placeholder="unknown" /></Field>
+            </>
+          ) : null}
+        </View>
+      )}
       {error && <Text style={ui.error}>{error}</Text>}
       <View style={[ui.row, { gap: 8 }]}>
         <Button title="Cancel" kind="secondary" onPress={onDone} />
