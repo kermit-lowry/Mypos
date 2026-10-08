@@ -1,3 +1,4 @@
+import type { MarketTrend } from "@mypos/shared";
 import * as SecureStore from "./storage";
 
 export class ApiError extends Error {
@@ -38,14 +39,24 @@ export const getApiUrl = () => baseUrl;
  * retried with the same key, so a sale is never charged twice when the store
  * wifi drops mid-request.
  */
-export async function api<T = any>(method: "GET" | "POST" | "PUT" | "PATCH", path: string, body?: unknown): Promise<T> {
+/** Options for one request. */
+export interface RequestOptions {
+  /** A manager's PIN approval for this action. */
+  approvalToken?: string | null;
+}
+
+export async function api<T = any>(method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown, opts: RequestOptions = {}): Promise<T> {
   const retries = body && typeof body === "object" && "idempotencyKey" in body ? 3 : 0;
   for (let attempt = 0; ; attempt++) {
     let res: Response;
     try {
       res = await fetch(`${baseUrl}${path}`, {
         method,
-        headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        headers: {
+          "content-type": "application/json",
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+          ...(opts.approvalToken ? { "x-approval-token": opts.approvalToken } : {}),
+        },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     } catch (e) {
@@ -75,6 +86,8 @@ export interface Variant {
   taxable: boolean;
   serialized: boolean;
   inventory?: { locationId: string; onHand: number }[];
+  /** Market price and 7-day change, for items with a price feed. */
+  market?: MarketTrend | null;
 }
 
 export interface Product {

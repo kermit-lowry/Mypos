@@ -3,16 +3,17 @@ import { InventoryAdjustInput, ProductInput, buylistOffer, sellPrice } from "@my
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { notFound } from "../errors.js";
-import { actorOf, parse, requireRole } from "../http.js";
+import { actorOf, parse, requirePermission, requireRole } from "../http.js";
 import { repriceSingles } from "../pricing/reprice.js";
 import { defaultProviders } from "../pricing/providers.js";
+import { marketTrends, withMarket } from "../pricing/trends.js";
 import type { Ctx } from "../services/context.js";
 import { moveInventory } from "../services/inventory.js";
+import { audit } from "../services/permissions.js";
 
 export function catalogRoutes(app: FastifyInstance, base: Ctx) {
   const { prisma } = base;
   const staff = { preHandler: requireRole("CASHIER") };
-  const manager = { preHandler: requireRole("MANAGER") };
 
   /** Register search: barcode/SKU exact match first, then title / set / number. */
   app.get("/catalog/search", staff, async (req) => {
@@ -24,7 +25,7 @@ export function catalogRoutes(app: FastifyInstance, base: Ctx) {
       where: { OR: [{ barcode: q }, { sku: q }] },
       include: { product: true, inventory: true },
     });
-    if (exact) return { results: [{ ...exact.product, variants: [exact] }] };
+    if (exact) return { results: await withMarket(prisma, [{ ...exact.product, variants: [exact] }]) };
 
     const where: Prisma.ProductWhereInput = {
       ...(kind ? { kind: kind as Prisma.ProductWhereInput["kind"] } : {}),
@@ -43,10 +44,10 @@ export function catalogRoutes(app: FastifyInstance, base: Ctx) {
       orderBy: { title: "asc" },
       include: { variants: { include: { inventory: locationId ? { where: { locationId } } : true } } },
     });
-    return { results };
+    return { results: await withMarket(prisma, results) };
   });
 
-  app.post("/catalog/products", manager, async (req) => {
+  app.post("/catalog/products", { preHandler: requirePermission("MANAGE_CATALOG") }, async (req) => {
     const input = parse(ProductInput, req.body);
     const { variants, ...product } = input;
     return prisma.product.create({ data: { ...product, variants: { create: variants } }, include: { variants: true } });
@@ -62,7 +63,7 @@ export function catalogRoutes(app: FastifyInstance, base: Ctx) {
     return p;
   });
 
-  app.patch("/catalog/products/:id", manager, async (req) => {
+  app.patch("/catalog/products/:id", { preHandler: requirePermission("MANAGE_CATALOG") }, async (req) => {
     const { id } = req.params as { id: string };
     const data = parse(
       z.object({ title: z.string().min(1).optional(), categoryId: z.string().nullable().optional(), channels: z.array(z.enum(["POS", "STOREFRONT", "SHOPIFY", "TCGPLAYER", "EBAY"])).optional() }),
@@ -71,16 +72,25 @@ export function catalogRoutes(app: FastifyInstance, base: Ctx) {
     return prisma.product.update({ where: { id }, data });
   });
 
-  app.patch("/catalog/variants/:id", manager, async (req) => {
+  app.patch("/catalog/variants/:id", { preHandler: requirePermission("MANAGE_CATALOG") }, async (req) => {
     const { id } = req.params as { id: string };
     const data = parse(
       z.object({ priceCents: z.number().int().nonnegative().optional(), autoPrice: z.boolean().optional(), barcode: z.string().optional() }),
       req.body,
     );
-    return prisma.variant.update({ where: { id }, data });
+    const before = await prisma.variant.findUniqueOrThrow({ where: { id }, include: { product: true } });
+    const updated = await prisma.variant.update({ where: { id }, data });
+    if (data.priceCents !== undefined && data.priceCents !== before.priceCents) {
+      await audit(prisma, {
+        action: "PRICE_CHANGE",
+        staffId: req.user.sub,
+        details: { variantId: id, sku: before.sku, item: before.product.title, fromCents: before.priceCents, toCents: data.priceCents },
+      });
+    }
+    return updated;
   });
 
-  app.post("/inventory/adjust", manager, async (req) => {
+  app.post("/inventory/adjust", { preHandler: requirePermission("INVENTORY_ADJUST") }, async (req) => {
     const input = parse(InventoryAdjustInput, req.body);
     const onHand = await prisma.$transaction((tx) =>
       moveInventory(tx, { ...input, staffId: actorOf(req)?.id, strict: input.reason !== "COUNT" }),
@@ -102,7 +112,9 @@ export function catalogRoutes(app: FastifyInstance, base: Ctx) {
     });
     if (!v) throw notFound("Variant");
     const market = v.marketCents;
+    const trend = (await marketTrends(prisma, [v.id])).get(v.id) ?? null;
     return {
+      trend,
       variantId: v.id,
       priceCents: v.priceCents,
       marketCents: market,
@@ -114,7 +126,7 @@ export function catalogRoutes(app: FastifyInstance, base: Ctx) {
     };
   });
 
-  app.post("/pricing/reprice", manager, async (req) => {
+  app.post("/pricing/reprice", { preHandler: requirePermission("MANAGE_CATALOG") }, async (req) => {
     const { productIds } = parse(z.object({ productIds: z.array(z.string()).optional() }), req.body ?? {});
     return repriceSingles(prisma, defaultProviders, undefined, { productIds });
   });

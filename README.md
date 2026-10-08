@@ -18,7 +18,7 @@ docker compose up -d db                     # or any Postgres 16
 cp apps/api/.env.example apps/api/.env
 pnpm --filter @mypos/shared build
 pnpm --filter @mypos/api db:migrate
-pnpm --filter @mypos/api db:seed            # staff: owner@/manager@/cashier@mypos.local, PIN 1234
+pnpm --filter @mypos/api db:seed            # staff: owner@/manager@/cashier@mypos.local, PINs 1111 (owner), 2222 (manager), 3333 (cashier)
 pnpm dev:api                                # http://localhost:4000
 pnpm dev:register                           # Expo; open on an iPad, Android device, or simulator
 ```
@@ -53,7 +53,10 @@ pnpm test
 | **Storefront** | Public `/storefront/*` API: browse products published to `STOREFRONT`, card-only checkout against the same inventory. |
 | **Channels** | Pushes available quantities to Shopify/eBay/TCGplayer and imports their paid orders (idempotent). |
 | **Reports** | Daily totals by tender, by product type (with cost), and buylist payouts. |
-| **Staff** | Email + PIN login, roles CASHIER < MANAGER < OWNER. Price overrides, refunds, buylist payouts and inventory adjustments need a manager. Consignor settlement needs the owner. |
+| **Staff & permissions** | Employees sign in with a unique PIN (or email + PIN). 24 permissions, each Allowed / Needs manager PIN / Not allowed, set per role (Cashier, Manager) and overridable per employee; owners always have everything. Each role/employee has a discount limit; going over prompts for a manager's PIN, and the approver's own limit must cover it. Enforced by the API (approvals are single-use and tied to the employee who asked), and reflected in the register (locked actions show "needs PIN" or are hidden). |
+| **Activity log** | Every change through the API is recorded (who, when, IP, approver, result, including refused attempts) with PINs/tokens redacted, plus plain-language events: drawer opens, cart deletes, voided items, discounts (amount, reason, approver), price overrides, price changes, refunds, PIN approvals, sign-ins and failed sign-ins. Filterable in the Activity tab. |
+| **Manual discounts** | One-tap discount buttons (% or $, optional preset reason) and discount reasons (optionally requiring a note), both set in the Deals tab. When reasons exist every manual discount needs one. Apply to an item or the whole cart. "Type in custom discount amounts" is its own permission; without it, only buttons, and the API checks a line never gets more than its button gives. |
+| **Market prices** | Items with a price feed show market price next to your price and the market's change over the last 7 days (▲/▼ %), in search, the cart, buylist, the customer display, and the web store API. Set `PRICE_REFRESH_HOURS=24` so history builds; until 7 days exist the change says how many days it covers. |
 
 ## Hardware
 

@@ -14,15 +14,23 @@ import { LoyaltySettingsScreen } from "./screens/LoyaltySettingsScreen";
 import { SellScreen } from "./screens/SellScreen";
 import { StoreSettingsScreen } from "./screens/StoreSettingsScreen";
 import { useLayout } from "./layout";
+import type { EffectivePermissions, Permission } from "@mypos/shared";
+import { ApprovalProvider } from "./approval";
+import { ActivityScreen } from "./screens/ActivityScreen";
+import { StaffScreen } from "./screens/StaffScreen";
 import { SessionContext, type Session, type Staff } from "./session";
 import { colors, ui } from "./theme";
 
-const TABS = ["Sell", "Buylist", "Events", "Labels", "Deals", "Store", "Loyalty", "Display"] as const;
+const TABS = ["Sell", "Buylist", "Events", "Labels", "Deals", "Activity", "Staff", "Store", "Loyalty", "Display"] as const;
 type Tab = (typeof TABS)[number];
-/** Tabs only the owner sees. */
-const OWNER_TABS: Tab[] = ["Store", "Loyalty"];
-/** Tabs managers and owners see. */
-const MANAGER_TABS: Tab[] = ["Deals"];
+/** Back-office tabs, shown to employees who have the permission (ALLOW or PIN). */
+const TAB_PERMISSION: Partial<Record<Tab, Permission>> = {
+  Deals: "MANAGE_DEALS",
+  Activity: "VIEW_REPORTS",
+  Staff: "MANAGE_STAFF",
+  Store: "MANAGE_SETTINGS",
+  Loyalty: "MANAGE_LOYALTY",
+};
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -60,9 +68,9 @@ export default function App() {
       <SafeAreaProvider>
         <StatusBar style="light" />
         <LoginScreen
-          onSignedIn={(staff: Staff, locations: Location[]) => {
+          onSignedIn={(staff: Staff, permissions: EffectivePermissions, locations: Location[]) => {
             const location = locations[0];
-            if (location) setSession({ staff, location });
+            if (location) setSession({ staff, permissions, location });
           }}
         />
       </SafeAreaProvider>
@@ -70,8 +78,10 @@ export default function App() {
   }
 
   const value = { ...session, signOut };
-  const role = session.staff.role;
-  const visible = TABS.filter((t) => (OWNER_TABS.includes(t) ? role === "OWNER" : MANAGER_TABS.includes(t) ? role !== "CASHIER" : true));
+  const visible = TABS.filter((t) => {
+    const p = TAB_PERMISSION[t];
+    return !p || session.permissions.levels[p] !== "DENY";
+  });
 
   // Customer display takes over the whole screen.
   if (tab === "Display") {
@@ -79,7 +89,9 @@ export default function App() {
       <SafeAreaProvider>
         <StatusBar hidden />
         <SessionContext.Provider value={value}>
-          <CustomerDisplayScreen onExit={() => setTab("Sell")} />
+          <ApprovalProvider>
+            <CustomerDisplayScreen onExit={() => setTab("Sell")} />
+          </ApprovalProvider>
         </SessionContext.Provider>
       </SafeAreaProvider>
     );
@@ -89,6 +101,7 @@ export default function App() {
     <SafeAreaProvider>
       <StatusBar style="light" />
       <SessionContext.Provider value={value}>
+        <ApprovalProvider>
         <SafeAreaView style={ui.screen}>
           <View style={[ui.row, { paddingHorizontal: narrow ? 8 : 16, paddingTop: 8, gap: 8 }]}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ gap: 8 }}>
@@ -116,9 +129,12 @@ export default function App() {
           {tab === "Events" && <EventsScreen />}
           {tab === "Labels" && <LabelsScreen />}
           {tab === "Deals" && <DealsScreen />}
+          {tab === "Activity" && <ActivityScreen />}
+          {tab === "Staff" && <StaffScreen />}
           {tab === "Loyalty" && <LoyaltySettingsScreen />}
           {tab === "Store" && <StoreSettingsScreen onSaved={(location) => setSession({ ...session, location })} />}
         </SafeAreaView>
+        </ApprovalProvider>
       </SessionContext.Provider>
     </SafeAreaProvider>
   );

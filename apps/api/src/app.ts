@@ -14,6 +14,7 @@ import { salesRoutes } from "./routes/sales.js";
 import { staffRoutes } from "./routes/staff.js";
 import { storefrontRoutes } from "./routes/storefront.js";
 import { terminalRoutes } from "./routes/terminals.js";
+import { registerRequestLog } from "./services/requestLog.js";
 import { tradeRoutes } from "./routes/trade.js";
 
 export async function buildApp(deps: { prisma: PrismaClient; gateway: PaymentGateway; logger?: boolean }) {
@@ -34,6 +35,8 @@ export async function buildApp(deps: { prisma: PrismaClient; gateway: PaymentGat
     app.log.error(err);
     return reply.code(500).send({ error: "INTERNAL", message: "Something went wrong" });
   });
+
+  registerRequestLog(app, deps.prisma);
 
   const ctx = { prisma: deps.prisma, gateway: deps.gateway };
   app.get("/health", async () => ({ ok: true }));

@@ -1,11 +1,12 @@
 import { Prisma, type ProductKind } from "@prisma/client";
-import { applyBps, cardAdjustment, cardAmountDue, dualTotals, earnFor, isCardPriced, type CheckoutInput, type TenderType } from "@mypos/shared";
+import { applyBps, cardAdjustment, cardAmountDue, discountBps, dualTotals, earnFor, isCardPriced, type CheckoutInput, type Permission, type TenderType } from "@mypos/shared";
 import type { Tx } from "../db.js";
 import { AppError, badRequest, conflict, forbidden, notFound, paymentFailed } from "../errors.js";
 import { config } from "../config.js";
 import type { GatewayResult } from "../payments/gateway.js";
 import { recordUnknownCharge, resolveTerminal, voidCharges, type Charge, type ResolvedTerminal } from "./charges.js";
-import { hasRole, type Ctx } from "./context.js";
+import type { Ctx } from "./context.js";
+import { approvalRequired, audit, consumeApproval, findApproval, permissionDenied } from "./permissions.js";
 import { moveInventory } from "./inventory.js";
 import { earns, getProgram, loyaltyBalances, postLoyalty, priceRewards, unitFor } from "./loyalty.js";
 import { applyDeals } from "./promotions.js";
@@ -51,10 +52,9 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
     if (input.channel !== "POS" && !v.product.channels.includes(input.channel)) {
       throw badRequest("NOT_ON_CHANNEL", `${v.product.title} is not sold on ${input.channel}`);
     }
-    if (line.unitPriceCents !== undefined && line.unitPriceCents !== v.priceCents && !hasRole(actor, "MANAGER")) {
-      throw forbidden("Price overrides require a manager");
+    if (!actor && (line.discountCents > 0 || (line.unitPriceCents !== undefined && line.unitPriceCents !== v.priceCents))) {
+      throw forbidden("Discounts and price changes can only be made at the register");
     }
-    if (line.discountCents > 0 && !actor) throw forbidden("Discounts can only be applied at the register");
     if (v.product.kind === "EVENT_ENTRY") {
       if (!input.customerId) throw badRequest("CUSTOMER_REQUIRED", "Event entries need a customer");
       if (line.quantity !== 1) throw badRequest("ONE_ENTRY", "One event entry per customer");
@@ -63,12 +63,47 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
     const unitPriceCents = line.unitPriceCents ?? v.priceCents;
     return {
       variant: v,
+      listPriceCents: v.priceCents,
+      discountReasonId: line.discountReasonId,
+      discountPresetId: line.discountPresetId,
+      discountNote: line.discountNote?.trim() || undefined,
       quantity: line.quantity,
       unitPriceCents,
       discountCents: Math.min(line.discountCents, unitPriceCents * line.quantity),
       promoDiscountCents: 0,
       taxable: v.taxable,
     };
+  });
+
+  // ── Manual discounts need a reason when the store has reasons set up ──
+  const reasons = await prisma.discountReason.findMany({ where: { active: true } });
+  const reasonFor = new Map<number, { id: string; name: string }>();
+  for (const [i, p] of priced.entries()) {
+    if (p.discountCents <= 0) continue;
+    if (reasons.length === 0) continue;
+    const reason = reasons.find((r) => r.id === p.discountReasonId);
+    if (!reason) throw badRequest("DISCOUNT_REASON", `Pick a reason for the discount on ${p.variant.product.title}`);
+    if (reason.requiresNote && !p.discountNote) throw badRequest("DISCOUNT_NOTE", `"${reason.name}" needs a note`);
+    reasonFor.set(i, reason);
+  }
+
+  // A discount is "custom" unless it came from an active discount button and
+  // takes no more off the line than that button would.
+  const presets = await prisma.discountPreset.findMany({ where: { active: true } });
+  const customDiscount = priced.some((p) => {
+    if (p.discountCents <= 0) return false;
+    const preset = presets.find((x) => x.id === p.discountPresetId);
+    if (!preset) return true;
+    const gross = p.unitPriceCents * p.quantity;
+    const most = preset.kind === "PERCENT" ? Math.ceil((gross * preset.value) / 10_000) : preset.value;
+    return p.discountCents > most;
+  });
+
+  // ── Employee permissions: price changes and manual discounts ──
+  const approval = await registerApprovals(ctx, {
+    customDiscount,
+    priceOverride: input.lines.some((l) => l.unitPriceCents !== undefined && l.unitPriceCents !== byId.get(l.variantId)!.priceCents),
+    maxDiscountBps: Math.max(0, ...priced.map((p) => discountBps(p.discountCents, p.unitPriceCents * p.quantity))),
   });
 
   // ── Automated deals: run first; a manual discount can only take off what's left ──
@@ -185,6 +220,9 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
             discountCents: p.discountCents,
             rewardDiscountCents: rewardDiscounts[i]!,
             promoDiscountCents: p.promoDiscountCents,
+            discountReasonId: reasonFor.get(i)?.id,
+            discountReason: reasonFor.get(i)?.name,
+            discountNote: reasonFor.has(i) ? p.discountNote : undefined,
             earnsLoyalty: !!input.customerId && program.enabled && earns(program, p.variant.product.kind),
             taxable: p.taxable,
           },
@@ -247,7 +285,7 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
             orderId: order.id,
             staffId: actor?.id,
           });
-          await attributeConsignment(tx, ctx, lineId, location.id, p);
+          await attributeConsignment(tx, lineId, location.id, p, approval.canOverridePrice);
         }
         if (p.variant.product.kind === "EVENT_ENTRY") {
           await registerForEvent(tx, p.variant.id, input.customerId!, lineId);
@@ -313,6 +351,45 @@ export async function checkout(ctx: Ctx, input: CheckoutInput, opts: CheckoutOpt
         await postLoyalty(tx, { customerId: input.customerId, unit: unitFor(program), amount: loyaltyEarned, reason: "Earned", orderId: order.id });
       }
 
+      // Activity log: each manual discount and price change, with who approved it.
+      for (const [i, p] of priced.entries()) {
+        const manual = p.discountCents - p.promoDiscountCents - rewardDiscounts[i]!;
+        const base = { staffId: actor?.id, approverId: approval.approverId, locationId: location.id };
+        if (manual > 0) {
+          await audit(tx, {
+            ...base,
+            action: "DISCOUNT",
+            details: {
+              orderId: order.id,
+              orderNumber: order.number,
+              item: p.variant.product.title,
+              sku: p.variant.sku,
+              amountCents: manual,
+              reason: reasonFor.get(i)?.name ?? null,
+              note: p.discountNote ?? null,
+            },
+          });
+        }
+        if (p.unitPriceCents !== p.listPriceCents) {
+          await audit(tx, {
+            ...base,
+            action: "PRICE_OVERRIDE",
+            details: { orderId: order.id, orderNumber: order.number, item: p.variant.product.title, sku: p.variant.sku, fromCents: p.listPriceCents, toCents: p.unitPriceCents, quantity: p.quantity },
+          });
+        }
+      }
+
+      if (approval.token) {
+        if (!(await consumeApproval(tx, approval.token, `order ${order.id}`))) throw approvalRequired(approval.permissions[0]!);
+        await audit(tx, {
+          action: "APPROVED:SALE",
+          staffId: actor?.id,
+          approverId: approval.approverId,
+          locationId: location.id,
+          details: { orderId: order.id, permissions: approval.permissions },
+        });
+      }
+
       await tx.order.update({
         where: { id: order.id },
         data: {
@@ -352,7 +429,7 @@ interface PricedLine {
 }
 
 /** Sell consigned units first-in-first-out and record what the store owes each consignor. */
-async function attributeConsignment(tx: Tx, ctx: Ctx, orderLineId: string, locationId: string, p: PricedLine): Promise<void> {
+async function attributeConsignment(tx: Tx, orderLineId: string, locationId: string, p: PricedLine, canOverridePrice: boolean): Promise<void> {
   const items = await tx.consignmentItem.findMany({
     where: { variantId: p.variant.id, locationId, status: "ACTIVE" },
     include: { consignor: true },
@@ -366,7 +443,7 @@ async function attributeConsignment(tx: Tx, ctx: Ctx, orderLineId: string, locat
     if (remaining === 0) break;
     const take = Math.min(remaining, item.quantity - item.soldQty);
     if (take <= 0) continue;
-    if (item.floorCents !== null && netPerUnit < item.floorCents && !hasRole(ctx.actor, "MANAGER")) {
+    if (item.floorCents !== null && netPerUnit < item.floorCents && !canOverridePrice) {
       throw conflict("BELOW_CONSIGNOR_FLOOR", "Price is below the consignor's floor; manager approval required");
     }
     const saleCents = Math.round(netPerUnit * take);
@@ -400,6 +477,53 @@ async function registerForEvent(tx: Tx, variantId: string, customerId: string, o
   const dupe = await tx.eventRegistration.findUnique({ where: { eventId_customerId: { eventId: event.id, customerId } } });
   if (dupe) throw conflict("ALREADY_REGISTERED", "Customer is already registered");
   await tx.eventRegistration.create({ data: { eventId: event.id, customerId, orderLineId } });
+}
+
+interface RegisterApproval {
+  /** Approval to consume when the sale commits. */
+  token?: string;
+  approverId?: string;
+  permissions: Permission[];
+  /** May sell below a consignor's floor (price-override rights or approval). */
+  canOverridePrice: boolean;
+}
+
+/**
+ * Price changes need PRICE_OVERRIDE; manual discounts need DISCOUNT_LINE and
+ * must fit the employee's discount limit. Anything beyond that needs a
+ * manager's PIN approval that covers it (and whose own limit covers it).
+ */
+async function registerApprovals(ctx: Ctx, need: { priceOverride: boolean; maxDiscountBps: number; customDiscount: boolean }): Promise<RegisterApproval> {
+  const { actor, perms } = ctx;
+  const levels = perms?.levels;
+  const canOverride = levels?.PRICE_OVERRIDE === "ALLOW";
+  if (!actor) return { permissions: [], canOverridePrice: false };
+
+  const required: Permission[] = [];
+  if (need.priceOverride) {
+    if (!levels || levels.PRICE_OVERRIDE === "DENY") throw permissionDenied("PRICE_OVERRIDE");
+    if (levels.PRICE_OVERRIDE === "PIN") required.push("PRICE_OVERRIDE");
+  }
+  if (need.maxDiscountBps > 0) {
+    if (!levels || levels.DISCOUNT_LINE === "DENY") throw permissionDenied("DISCOUNT_LINE");
+    if (levels.DISCOUNT_LINE === "PIN" || need.maxDiscountBps > perms!.discountMaxBps) required.push("DISCOUNT_LINE");
+    if (need.customDiscount) {
+      if (levels.DISCOUNT_CUSTOM === "DENY") throw permissionDenied("DISCOUNT_CUSTOM");
+      if (levels.DISCOUNT_CUSTOM === "PIN") required.push("DISCOUNT_CUSTOM");
+    }
+  }
+  if (required.length === 0) return { permissions: [], canOverridePrice: canOverride };
+
+  const grants = await Promise.all(required.map((p) => findApproval(ctx.prisma, ctx.approvalToken, p, actor.id)));
+  const grant = grants[0];
+  const ok = grant && grants.every((g) => g?.id === grant.id) && (!required.includes("DISCOUNT_LINE") || grant.discountMaxBps >= need.maxDiscountBps);
+  if (!ok) throw approvalRequired(required[0]!, { permissions: required, discountBps: need.maxDiscountBps });
+  return {
+    token: grant.id,
+    approverId: grant.approverId,
+    permissions: required,
+    canOverridePrice: canOverride || required.includes("PRICE_OVERRIDE"),
+  };
 }
 
 function sumChange(order: OrderWithDetails): number {

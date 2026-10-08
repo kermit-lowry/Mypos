@@ -1,3 +1,4 @@
+import type { MarketTrend } from "@mypos/shared";
 import { api } from "./api";
 
 /** What the customer-facing screen shows. Published by the register, polled by the display. */
@@ -8,7 +9,7 @@ export type DisplayState =
       storeName: string;
       /** e.g. "4%"; null when dual pricing is off. */
       cardPercent: string | null;
-      lines: { title: string; detail: string; quantity: number; cashCents: number; cardCents: number }[];
+      lines: { title: string; detail: string; quantity: number; cashCents: number; cardCents: number; market?: MarketTrend | null }[];
       /** Automated deals applied (cash-price amounts). */
       promotions?: { name: string; discountCents: number }[];
       cash: { subtotalCents: number; discountCents: number; taxCents: number; totalCents: number };

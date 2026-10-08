@@ -19,6 +19,21 @@ export async function seedCategoriesAndDeals() {
   await assign({ kind: "SNEAKER" }, footwear.id);
   await assign({ kind: "APPAREL" }, apparel.id);
 
+  if ((await prisma.discountReason.count()) === 0) {
+    for (const [i, [name, requiresNote]] of ([["Damaged / opened", false], ["Price match", true], ["Employee", false], ["Regular customer", false], ["Manager special", true]] as const).entries()) {
+      await prisma.discountReason.create({ data: { name, requiresNote, sortOrder: i } });
+    }
+    const employee = await prisma.discountReason.findUniqueOrThrow({ where: { name: "Employee" } });
+    await prisma.discountPreset.createMany({
+      data: [
+        { label: "5%", kind: "PERCENT", value: 500, sortOrder: 0 },
+        { label: "10%", kind: "PERCENT", value: 1000, sortOrder: 1 },
+        { label: "$5 off", kind: "AMOUNT", value: 500, sortOrder: 2 },
+        { label: "Employee 20%", kind: "PERCENT", value: 2000, reasonId: employee.id, sortOrder: 3 },
+      ],
+    });
+  }
+
   if ((await prisma.promotion.count()) === 0) {
     await prisma.promotion.createMany({
       data: [

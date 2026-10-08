@@ -71,9 +71,15 @@ export type InventoryAdjustInput = z.infer<typeof InventoryAdjustInput>;
 export const CartLine = z.object({
   variantId: id,
   quantity: z.number().int().positive(),
-  /** Overrides the variant price (requires MANAGER). */
+  /** Overrides the variant price (needs PRICE_OVERRIDE). */
   unitPriceCents: cents.optional(),
+  /** Manual discount on the line (needs DISCOUNT_LINE, within the employee's limit). */
   discountCents: cents.default(0),
+  /** Required with a manual discount when the store has discount reasons set up. */
+  discountReasonId: z.string().optional(),
+  discountNote: z.string().max(200).optional(),
+  /** The discount button used, if any. Without one, the discount is a custom amount. */
+  discountPresetId: z.string().optional(),
 });
 export type CartLine = z.infer<typeof CartLine>;
 
@@ -297,3 +303,22 @@ export const PromotionInput = z
     if (p.startsAt && p.endsAt && p.endsAt <= p.startsAt) ctx.addIssue({ code: "custom", path: ["endsAt"], message: "End must be after start" });
   });
 export type PromotionInput = z.infer<typeof PromotionInput>;
+
+export const DiscountReasonInput = z.object({
+  name: z.string().min(1).max(60),
+  requiresNote: z.boolean().default(false),
+  active: z.boolean().default(true),
+  sortOrder: z.number().int().default(0),
+});
+
+export const DiscountPresetInput = z
+  .object({
+    label: z.string().min(1).max(30),
+    kind: z.enum(["PERCENT", "AMOUNT"]),
+    /** bps for PERCENT (1000 = 10%), cents for AMOUNT. */
+    value: z.number().int().positive(),
+    reasonId: z.string().nullable().optional(),
+    active: z.boolean().default(true),
+    sortOrder: z.number().int().default(0),
+  })
+  .refine((p) => p.kind !== "PERCENT" || p.value <= 10_000, { path: ["value"], message: "Can't be more than 100%" });

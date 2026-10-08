@@ -3,6 +3,10 @@ import bcrypt from "bcryptjs";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import { MockGateway } from "../src/payments/mock.js";
+import { pinLookup, resetAttemptsForTests } from "../src/services/permissions.js";
+
+/** Each test employee's PIN. */
+export const PINS = { CASHIER: "1111", MANAGER: "2222", OWNER: "3333" } as const;
 
 export const prisma = new PrismaClient();
 
@@ -28,12 +32,13 @@ export async function setup(): Promise<World> {
   const gateway = new MockGateway();
   const app = await buildApp({ prisma, gateway });
   const location = await prisma.location.create({ data: { name: "Main St", taxRateBps: 825 } });
-  const pinHash = await bcrypt.hash("1234", 4);
+  resetAttemptsForTests();
   const tokens: Record<string, string> = {};
   for (const role of ["CASHIER", "MANAGER", "OWNER"] as const) {
     const email = `${role.toLowerCase()}@shop.test`;
-    await prisma.staff.create({ data: { name: role, email, pinHash, role } });
-    const res = await app.inject({ method: "POST", url: "/auth/login", payload: { email, pin: "1234" } });
+    const pin = PINS[role];
+    await prisma.staff.create({ data: { name: role, email, role, pinHash: await bcrypt.hash(pin, 4), pinLookup: pinLookup(pin) } });
+    const res = await app.inject({ method: "POST", url: "/auth/login", payload: { pin } });
     tokens[role] = res.json().token;
   }
   const as: World["as"] = async (token, method, url, body) => {

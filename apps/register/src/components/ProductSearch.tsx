@@ -7,6 +7,7 @@ import { api, ApiError, type Product, type Variant } from "../api";
 import { useSession } from "../session";
 import { colors, ui } from "../theme";
 import { Button } from "./Button";
+import { MarketBadge } from "./MarketBadge";
 
 export function variantLabel(v: Variant): string {
   return [v.condition, v.finish && v.finish !== "NONFOIL" ? v.finish : null, v.size && `Sz ${v.size}`, v.colorway, v.itemCondition]
@@ -102,6 +103,7 @@ export function ProductSearch({ onPick }: { onPick: (p: Product, v: Variant) => 
               </View>
               <View style={{ alignItems: "flex-end" }}>
                 <Text style={ui.h2}>{formatCents(v.priceCents)}</Text>
+                <MarketBadge market={v.market} />
                 <Text style={[ui.muted, onHand <= 0 && { color: colors.bad }]}>{onHand} in stock</Text>
               </View>
             </Pressable>

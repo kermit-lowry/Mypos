@@ -2,6 +2,7 @@ import { CartLine, cardPrice } from "@mypos/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { availableFor } from "../channels/sync.js";
+import { marketTrends } from "../pricing/trends.js";
 import { notFound } from "../errors.js";
 import { parse } from "../http.js";
 import { checkout } from "../services/checkout.js";
@@ -36,6 +37,7 @@ export function storefrontRoutes(app: FastifyInstance, base: Ctx, opts: { fulfil
       orderBy: { id: "asc" },
       include: { variants: { include: { inventory: true } } },
     });
+    const trends = await marketTrends(prisma, products.flatMap((p) => p.variants.map((v) => v.id)));
     return {
       products: products.map((p) => ({
         id: p.id,
@@ -55,6 +57,8 @@ export function storefrontRoutes(app: FastifyInstance, base: Ctx, opts: { fulfil
           colorway: v.colorway,
           itemCondition: v.itemCondition,
           available: Math.max(0, v.inventory.reduce((a, l) => a + l.onHand - l.reserved, 0)),
+          /** Market price and 7-day change, for items with a price feed. */
+          market: trends.get(v.id)?.marketCents != null ? trends.get(v.id) : null,
         })),
       })),
       nextCursor: products.length === 48 ? products.at(-1)!.id : null,

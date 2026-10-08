@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { parse, requireRole } from "../http.js";
+import { parse, requirePermission, requireRole } from "../http.js";
 import type { TerminalRef } from "../payments/gateway.js";
 import type { Ctx } from "../services/context.js";
 import { reconcilePayment } from "../services/reconcile.js";
@@ -8,7 +8,6 @@ import { reconcilePayment } from "../services/reconcile.js";
 export function terminalRoutes(app: FastifyInstance, base: Ctx) {
   const { prisma, gateway } = base;
   const staff = { preHandler: requireRole("CASHIER") };
-  const manager = { preHandler: requireRole("MANAGER") };
 
   app.get("/terminals", staff, async (req) => {
     const { locationId } = parse(z.object({ locationId: z.string().optional() }), req.query);
@@ -16,7 +15,7 @@ export function terminalRoutes(app: FastifyInstance, base: Ctx) {
   });
 
   /** Pull the merchant's PAX terminals from Handpoint. New ones are added to `locationId`; existing ones keep their name and location. */
-  app.post("/terminals/sync", manager, async (req) => {
+  app.post("/terminals/sync", { preHandler: requirePermission("MANAGE_TERMINALS") }, async (req) => {
     const { locationId } = parse(z.object({ locationId: z.string() }), req.body);
     const list = (gateway as { listTerminals?: () => Promise<TerminalRef[]> }).listTerminals;
     if (!list) return { added: 0, terminals: [] };
@@ -34,7 +33,7 @@ export function terminalRoutes(app: FastifyInstance, base: Ctx) {
     return { added, terminals: await prisma.terminal.findMany({ where: { gatewayRef: { in: devices.map((d) => d.ref) } } }) };
   });
 
-  app.patch("/terminals/:id", manager, async (req) => {
+  app.patch("/terminals/:id", { preHandler: requirePermission("MANAGE_TERMINALS") }, async (req) => {
     const { id } = req.params as { id: string };
     const data = parse(
       z.object({
@@ -49,11 +48,11 @@ export function terminalRoutes(app: FastifyInstance, base: Ctx) {
   });
 
   /** Card payments a manager needs to look at: unknown outcomes, failed voids, failed refunds. */
-  app.get("/payments/pending", manager, async () =>
+  app.get("/payments/pending", { preHandler: requirePermission("RESOLVE_PAYMENTS") }, async () =>
     prisma.payment.findMany({ where: { status: "PENDING", tender: "CARD" }, orderBy: { createdAt: "desc" }, take: 100 }),
   );
 
-  app.post("/payments/:id/resolve", manager, async (req) => {
+  app.post("/payments/:id/resolve", { preHandler: requirePermission("RESOLVE_PAYMENTS") }, async (req) => {
     const { id } = req.params as { id: string };
     return reconcilePayment(base, id);
   });

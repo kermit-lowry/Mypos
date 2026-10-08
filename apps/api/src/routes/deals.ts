@@ -1,8 +1,9 @@
-import { PromotionInput } from "@mypos/shared";
+import { DiscountPresetInput, DiscountReasonInput, PromotionInput } from "@mypos/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { badRequest, conflict, notFound } from "../errors.js";
-import { parse, requireRole } from "../http.js";
+import { parse, requirePermission, requireRole } from "../http.js";
+import { audit } from "../services/permissions.js";
 import type { Ctx } from "../services/context.js";
 import { categoryLineage, runningPromotions } from "../services/promotions.js";
 
@@ -10,7 +11,6 @@ import { categoryLineage, runningPromotions } from "../services/promotions.js";
 export function dealRoutes(app: FastifyInstance, base: Ctx) {
   const { prisma } = base;
   const staff = { preHandler: requireRole("CASHIER") };
-  const manager = { preHandler: requireRole("MANAGER") };
 
   // ── Categories ─────────────────────────────────────────────
   app.get("/categories", staff, async () => {
@@ -30,7 +30,7 @@ export function dealRoutes(app: FastifyInstance, base: Ctx) {
       .sort((a, b) => a.path.localeCompare(b.path));
   });
 
-  app.post("/categories", manager, async (req, reply) => {
+  app.post("/categories", { preHandler: requirePermission("MANAGE_DEALS") }, async (req, reply) => {
     const { name, parentId } = parse(z.object({ name: z.string().min(1).max(80), parentId: z.string().nullable().optional() }), req.body);
     if (parentId && !(await prisma.category.findUnique({ where: { id: parentId } }))) throw notFound("Parent category");
     // NULL parents aren't unique in Postgres, so check top-level names by hand.
@@ -38,7 +38,7 @@ export function dealRoutes(app: FastifyInstance, base: Ctx) {
     return reply.code(201).send(await prisma.category.create({ data: { name, parentId: parentId ?? null } }));
   });
 
-  app.patch("/categories/:id", manager, async (req) => {
+  app.patch("/categories/:id", { preHandler: requirePermission("MANAGE_DEALS") }, async (req) => {
     const { id } = req.params as { id: string };
     const data = parse(z.object({ name: z.string().min(1).max(80).optional(), parentId: z.string().nullable().optional() }), req.body);
     if (data.parentId) {
@@ -49,7 +49,7 @@ export function dealRoutes(app: FastifyInstance, base: Ctx) {
     return prisma.category.update({ where: { id }, data });
   });
 
-  app.delete("/categories/:id", manager, async (req) => {
+  app.delete("/categories/:id", { preHandler: requirePermission("MANAGE_DEALS") }, async (req) => {
     const { id } = req.params as { id: string };
     const [children, products] = await Promise.all([prisma.category.count({ where: { parentId: id } }), prisma.product.count({ where: { categoryId: id } })]);
     if (children || products) throw conflict("CATEGORY_IN_USE", "Move its products and subcategories first", { children, products });
@@ -58,7 +58,7 @@ export function dealRoutes(app: FastifyInstance, base: Ctx) {
   });
 
   /** Put products in a category (or take them out with categoryId null). */
-  app.post("/categories/assign", manager, async (req) => {
+  app.post("/categories/assign", { preHandler: requirePermission("MANAGE_DEALS") }, async (req) => {
     const { categoryId, productIds } = parse(z.object({ categoryId: z.string().nullable(), productIds: z.array(z.string()).min(1).max(1000) }), req.body);
     if (categoryId && !(await prisma.category.findUnique({ where: { id: categoryId } }))) throw notFound("Category");
     const r = await prisma.product.updateMany({ where: { id: { in: productIds } }, data: { categoryId } });
@@ -81,9 +81,9 @@ export function dealRoutes(app: FastifyInstance, base: Ctx) {
     return (await runningPromotions(prisma, location, channel)).map((p) => ({ id: p.id, name: p.name, type: p.type }));
   });
 
-  app.post("/promotions", manager, async (req, reply) => reply.code(201).send(await prisma.promotion.create({ data: parse(PromotionInput, req.body) })));
+  app.post("/promotions", { preHandler: requirePermission("MANAGE_DEALS") }, async (req, reply) => reply.code(201).send(await prisma.promotion.create({ data: parse(PromotionInput, req.body) })));
 
-  app.put("/promotions/:id", manager, async (req) => {
+  app.put("/promotions/:id", { preHandler: requirePermission("MANAGE_DEALS") }, async (req) => {
     const { id } = req.params as { id: string };
     const data = parse(PromotionInput, req.body);
     // Full replace, so clearing an optional field (e.g. an end date) sticks.
@@ -93,15 +93,44 @@ export function dealRoutes(app: FastifyInstance, base: Ctx) {
     return prisma.promotion.update({ where: { id }, data: { ...nulls, ...data } });
   });
 
-  app.patch("/promotions/:id", manager, async (req) => {
+  app.patch("/promotions/:id", { preHandler: requirePermission("MANAGE_DEALS") }, async (req) => {
     const { id } = req.params as { id: string };
     const data = parse(z.object({ active: z.boolean().optional(), priority: z.number().int().min(0).max(10_000).optional() }), req.body);
     return prisma.promotion.update({ where: { id }, data });
   });
 
-  app.delete("/promotions/:id", manager, async (req) => {
+  app.delete("/promotions/:id", { preHandler: requirePermission("MANAGE_DEALS") }, async (req) => {
     const { id } = req.params as { id: string };
     await prisma.promotion.delete({ where: { id } });
     return { deleted: true };
+  });
+
+  // ── Manual discount setup: reasons and one-tap buttons ─────
+  app.get("/discount-reasons", staff, async (req) => {
+    const { all } = parse(z.object({ all: z.coerce.boolean().default(false) }), req.query);
+    return prisma.discountReason.findMany({ where: all ? {} : { active: true }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] });
+  });
+  app.post("/discount-reasons", { preHandler: requirePermission("MANAGE_DEALS") }, async (req, reply) =>
+    reply.code(201).send(await prisma.discountReason.create({ data: parse(DiscountReasonInput, req.body) })),
+  );
+  app.patch("/discount-reasons/:id", { preHandler: requirePermission("MANAGE_DEALS") }, async (req) => {
+    const { id } = req.params as { id: string };
+    // Reasons are only turned off, never deleted, so old sales keep their history.
+    return prisma.discountReason.update({ where: { id }, data: parse(DiscountReasonInput.partial(), req.body) });
+  });
+
+  app.get("/discount-presets", staff, async (req) => {
+    const { all } = parse(z.object({ all: z.coerce.boolean().default(false) }), req.query);
+    return prisma.discountPreset.findMany({ where: all ? {} : { active: true }, orderBy: [{ sortOrder: "asc" }, { label: "asc" }] });
+  });
+  app.post("/discount-presets", { preHandler: requirePermission("MANAGE_DEALS") }, async (req, reply) => {
+    const data = parse(DiscountPresetInput, req.body);
+    if (data.reasonId && !(await prisma.discountReason.findUnique({ where: { id: data.reasonId } }))) throw notFound("Discount reason");
+    return reply.code(201).send(await prisma.discountPreset.create({ data }));
+  });
+  app.patch("/discount-presets/:id", { preHandler: requirePermission("MANAGE_DEALS") }, async (req) => {
+    const { id } = req.params as { id: string };
+    const data = parse(z.object({ label: z.string().min(1).max(30).optional(), active: z.boolean().optional(), sortOrder: z.number().int().optional(), reasonId: z.string().nullable().optional() }), req.body);
+    return prisma.discountPreset.update({ where: { id }, data });
   });
 }

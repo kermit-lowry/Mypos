@@ -2,6 +2,7 @@ import { formatCents } from "@mypos/shared";
 import { useEffect, useState } from "react";
 import { FlatList, Pressable, Text, View } from "react-native";
 import { api } from "../api";
+import { MarketBadge } from "../components/MarketBadge";
 import { TerminalPicker, useTerminal } from "../components/TerminalPicker";
 import { displayChannel, type DisplayState } from "../display";
 import { useLayout } from "../layout";
@@ -93,6 +94,7 @@ export function CustomerDisplayScreen({ onExit }: { onExit: () => void }) {
                   {l.title}
                 </Text>
                 {!!l.detail && <Text style={[ui.muted, { fontSize: 15 }]}>{l.detail}</Text>}
+                <MarketBadge market={l.market} size={15} />
               </View>
               <Text style={[ui.text, { width: 130, textAlign: "right", fontSize: 20 }]}>{formatCents(l.cashCents)}</Text>
               {dual && <Text style={[ui.text, { width: 130, textAlign: "right", fontSize: 20 }]}>{formatCents(l.cardCents)}</Text>}

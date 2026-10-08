@@ -1,16 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { syncAll } from "../channels/sync.js";
-import { parse, requireRole } from "../http.js";
+import { parse, requirePermission, requireRole } from "../http.js";
 import type { Ctx } from "../services/context.js";
 
 export function adminRoutes(app: FastifyInstance, base: Ctx) {
   const { prisma } = base;
-  const manager = { preHandler: requireRole("MANAGER") };
 
   app.get("/locations", { preHandler: requireRole("CASHIER") }, async () => prisma.location.findMany({ orderBy: { name: "asc" } }));
 
-  app.post("/channels/listings", manager, async (req) => {
+  app.post("/channels/listings", { preHandler: requirePermission("MANAGE_CHANNELS") }, async (req) => {
     const input = parse(
       z.object({
         variantId: z.string(),
@@ -27,13 +26,13 @@ export function adminRoutes(app: FastifyInstance, base: Ctx) {
     });
   });
 
-  app.post("/channels/sync", manager, async (req) => {
+  app.post("/channels/sync", { preHandler: requirePermission("MANAGE_CHANNELS") }, async (req) => {
     const { locationId } = parse(z.object({ locationId: z.string() }), req.body);
     return syncAll(prisma, locationId);
   });
 
   /** End-of-day: sales by tender and product type, refunds, and buylist payouts. */
-  app.get("/reports/daily", manager, async (req) => {
+  app.get("/reports/daily", { preHandler: requirePermission("VIEW_REPORTS") }, async (req) => {
     const { locationId, date } = parse(z.object({ locationId: z.string(), date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }), req.query);
     const start = new Date(`${date}T00:00:00`);
     const end = new Date(start.getTime() + 24 * 3600 * 1000);

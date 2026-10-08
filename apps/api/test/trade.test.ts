@@ -71,8 +71,9 @@ describe("consignment", () => {
     // A cashier discount that takes the pair below the consignor's floor is blocked...
     const cashierLow = await w.as(w.cashier, "POST", "/orders/checkout", {
       locationId: w.locationId,
-      lines: [{ variantId: v.shoe, quantity: 1, discountCents: 5000 }],
-      tenders: [{ type: "CASH", amountCents: 27063 }],
+      // $25 off a $300 pair is within a cashier's 10% limit, but under the $280 floor.
+      lines: [{ variantId: v.shoe, quantity: 1, discountCents: 2500 }],
+      tenders: [{ type: "CASH", amountCents: 29769 }],
       idempotencyKey: key(),
     });
     expect(cashierLow.body.error).toBe("BELOW_CONSIGNOR_FLOOR");

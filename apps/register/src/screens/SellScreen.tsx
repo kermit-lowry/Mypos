@@ -7,13 +7,16 @@ import { api, ApiError, apiText, type Customer, type LoyaltyProgram, type Loyalt
 import { Button } from "../components/Button";
 import { CustomerPicker } from "../components/CustomerPicker";
 import { NumberPrompt } from "../components/NumberPrompt";
+import { DiscountSheet, type AppliedDiscount } from "../components/DiscountSheet";
+import { MarketBadge } from "../components/MarketBadge";
+import { NotPermitted, useAskApproval, useGuard } from "../approval";
 import { SplitPane } from "../components/SplitPane";
 import { useLayout } from "../layout";
 import { ProductSearch, variantLabel } from "../components/ProductSearch";
 import { RewardsPicker } from "../components/RewardsPicker";
 import { TerminalPicker, useTerminal } from "../components/TerminalPicker";
 import { displayChannel, publishDisplay } from "../display";
-import { isManager, useSession } from "../session";
+import { useCan, useSession } from "../session";
 import { colors, ui } from "../theme";
 
 interface Line {
@@ -21,12 +24,17 @@ interface Line {
   variant: Variant;
   quantity: number;
   discountCents: number;
+  discountPresetId?: string;
+  discountReasonId?: string;
+  discountReason?: string;
+  discountNote?: string;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export function SellScreen() {
-  const { location, staff } = useSession();
+  const { location, permissions } = useSession();
+  const can = useCan();
   const [lines, setLines] = useState<Line[]>([]);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [tendering, setTendering] = useState(false);
@@ -35,7 +43,13 @@ export function SellScreen() {
   const [pickingRewards, setPickingRewards] = useState(false);
   const [quote, setQuote] = useState<LoyaltyQuote | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
-  const [discounting, setDiscounting] = useState<Line | null>(null);
+  /** A line, or "cart" for a whole-cart discount. */
+  const [discounting, setDiscounting] = useState<Line | "cart" | null>(null);
+  /** Manager approval for this cart's discounts, sent with the sale. */
+  const [discountApproval, setDiscountApproval] = useState<string | null>(null);
+  const guard = useGuard();
+  const askApproval = useAskApproval();
+  const [notice, setNotice] = useState<string | null>(null);
   const [showCart, setShowCart] = useState(false);
   const [drawerMsg, setDrawerMsg] = useState<string | null>(null);
 
@@ -67,7 +81,14 @@ export function SellScreen() {
   // The server prices every cart: automated deals (which depend on the day and
   // time), rewards, and both prices. Charge waits for a quote of this exact cart.
   const loyaltyOn = !!program?.enabled && !!customer;
-  const cartLines = lines.map((l) => ({ variantId: l.variant.id, quantity: l.quantity, discountCents: l.discountCents }));
+  const cartLines = lines.map((l) => ({
+    variantId: l.variant.id,
+    quantity: l.quantity,
+    discountCents: l.discountCents,
+    discountPresetId: l.discountPresetId,
+    discountReasonId: l.discountReasonId,
+    discountNote: l.discountNote,
+  }));
   const signature = JSON.stringify([cartLines, rewardIds, customer?.id ?? null]);
   const [quoteSig, setQuoteSig] = useState<string | null>(null);
   useEffect(() => {
@@ -105,20 +126,81 @@ export function SellScreen() {
     });
   }
 
-  async function noSale() {
-    if (!terminalState.terminal) return setDrawerMsg("Pick this register's terminal first");
+  /** Run a guarded action; show why if it isn't allowed. */
+  async function guarded(fn: () => Promise<unknown>) {
+    setNotice(null);
     try {
-      await api("POST", `/terminals/${terminalState.terminal.id}/drawer`);
-      setDrawerMsg("Drawer opened");
+      await fn();
     } catch (e) {
-      setDrawerMsg(e instanceof ApiError ? e.message : String(e));
+      setNotice(e instanceof NotPermitted || e instanceof ApiError ? e.message : String(e));
     }
   }
 
+  const noSale = () =>
+    guarded(async () => {
+      if (!terminalState.terminal) return setDrawerMsg("Pick this register's terminal first");
+      const r = await guard("NO_SALE", (t) => api("POST", `/terminals/${terminalState.terminal!.id}/drawer`, undefined, { approvalToken: t }));
+      if (r) setDrawerMsg("Drawer opened");
+    });
+
+  const itemsFor = (ls: { line: Line; quantity: number }[]) =>
+    ls.map(({ line, quantity }) => ({ variantId: line.variant.id, title: line.product.title, quantity, priceCents: line.variant.priceCents }));
+
+  /** Removing items is a void: checked against permissions and logged. */
   const setQty = (id: string, q: number) =>
-    setLines((prev) => (q <= 0 ? prev.filter((l) => l.variant.id !== id) : prev.map((l) => (l.variant.id === id ? { ...l, quantity: q } : l))));
+    guarded(async () => {
+      const line = lines.find((l) => l.variant.id === id);
+      if (!line) return;
+      if (q < line.quantity) {
+        const ok = await guard("LINE_VOID", (t) =>
+          api("POST", "/audit/cart", { action: "LINE_VOID", locationId: location.id, items: itemsFor([{ line, quantity: line.quantity - q }]) }, { approvalToken: t }),
+        );
+        if (!ok) return;
+      }
+      setLines((prev) => (q <= 0 ? prev.filter((l) => l.variant.id !== id) : prev.map((l) => (l.variant.id === id ? { ...l, quantity: q } : l))));
+    });
 
   const discount = (line: Line) => setDiscounting(line);
+
+  /** Apply a manual discount; ask a manager first if it's over this employee's limit. */
+  async function applyDiscount(targets: Line[], d: AppliedDiscount) {
+    const level = can("DISCOUNT_LINE");
+    if (level === "PIN" || d.maxBps > permissions.discountMaxBps) {
+      const perms: ("DISCOUNT_LINE" | "DISCOUNT_CUSTOM")[] = ["DISCOUNT_LINE"];
+      if (!d.presetId && can("DISCOUNT_CUSTOM") === "PIN") perms.push("DISCOUNT_CUSTOM");
+      const token = await askApproval({ permissions: perms, discountBps: d.maxBps });
+      if (!token) return;
+      setDiscountApproval(token);
+    } else if (!d.presetId && can("DISCOUNT_CUSTOM") === "PIN") {
+      const token = await askApproval({ permissions: ["DISCOUNT_CUSTOM"] });
+      if (!token) return;
+      setDiscountApproval(token);
+    }
+    const byId = new Map(targets.map((t, i) => [t.variant.id, d.amounts[i]!]));
+    setLines((prev) =>
+      prev.map((l) =>
+        byId.has(l.variant.id)
+          ? { ...l, discountCents: byId.get(l.variant.id)!, discountPresetId: d.presetId, discountReasonId: d.reasonId, discountReason: d.reasonName, discountNote: d.note }
+          : l,
+      ),
+    );
+  }
+
+  const removeDiscount = (target: Line) =>
+    setLines((prev) =>
+      prev.map((l) =>
+        l.variant.id === target.variant.id ? { ...l, discountCents: 0, discountPresetId: undefined, discountReasonId: undefined, discountReason: undefined, discountNote: undefined } : l,
+      ),
+    );
+
+  /** Deleting the cart is checked against permissions and logged. */
+  const clearCart = () =>
+    guarded(async () => {
+      const ok = await guard("CART_CLEAR", (t) =>
+        api("POST", "/audit/cart", { action: "CART_CLEAR", locationId: location.id, items: itemsFor(lines.map((line) => ({ line, quantity: line.quantity }))) }, { approvalToken: t }),
+      );
+      if (ok) reset();
+    });
 
   function reset() {
     setLines([]);
@@ -126,6 +208,7 @@ export function SellScreen() {
     setRewardIds([]);
     setTendering(false);
     setPayState(null);
+    setDiscountApproval(null);
   }
 
   // Mirror the sale to the customer-facing display.
@@ -150,6 +233,7 @@ export function SellScreen() {
       lines: lines.map((l, i) => ({
         title: l.product.title,
         detail: variantLabel(l.variant),
+        market: l.variant.market?.marketCents != null ? l.variant.market : null,
         quantity: l.quantity,
         cashCents: l.variant.priceCents * l.quantity - lineDiscount(i),
         cardCents: cardPrice(l.variant.priceCents, bps) * l.quantity - (lineDiscount(i) ? cardPrice(lineDiscount(i), bps) : 0),
@@ -214,6 +298,7 @@ export function SellScreen() {
                     <Text style={[ui.muted, { color: colors.good, textAlign: "right" }]}>Deal −{formatCents(fresh.lines[index]!.promoDiscountCents)}</Text>
                   )}
                   <Text style={ui.muted}>{variantLabel(l.variant)}</Text>
+                  <MarketBadge market={l.variant.market} />
                   <View style={[ui.row, { gap: 8, marginTop: 6 }]}>
                     <Button
                       title="−"
@@ -229,10 +314,18 @@ export function SellScreen() {
                       onPress={() => setQty(l.variant.id, l.quantity + 1)}
                       style={{ minHeight: 36, paddingVertical: 6 }}
                     />
-                    <Pressable onPress={() => discount(l)}>
-                      <Text style={[ui.muted, { marginLeft: 8 }]}>{l.discountCents ? `−${formatCents(l.discountCents)}` : "Discount"}</Text>
-                    </Pressable>
+                    {can("DISCOUNT_LINE") !== "DENY" && (
+                      <Pressable onPress={() => discount(l)}>
+                        <Text style={[ui.muted, { marginLeft: 8 }]}>{l.discountCents ? `−${formatCents(l.discountCents)}` : "Discount"}</Text>
+                      </Pressable>
+                    )}
                   </View>
+                  {!!l.discountReason && (
+                    <Text style={ui.muted}>
+                      {l.discountReason}
+                      {l.discountNote ? `: ${l.discountNote}` : ""}
+                    </Text>
+                  )}
                 </View>
               )}
             />
@@ -261,30 +354,32 @@ export function SellScreen() {
               )}
               {quoteError && <Text style={ui.error}>{quoteError}</Text>}
             </View>
+            {notice && <Text style={ui.error}>{notice}</Text>}
             <View style={[ui.row, { gap: 8 }]}>
-              <Button title="Clear" kind="secondary" onPress={reset} disabled={!lines.length} />
+              <Button title="Clear" kind="secondary" onPress={clearCart} disabled={!lines.length || can("CART_CLEAR") === "DENY"} />
+              {can("DISCOUNT_LINE") !== "DENY" && (
+                <Button title="% Cart" kind="secondary" onPress={() => setDiscounting("cart")} disabled={!lines.length} />
+              )}
               <Button title="Charge" kind="good" onPress={() => setTendering(true)} disabled={!lines.length || !quoteReady} style={{ flex: 1 }} />
             </View>
-            {isManager(staff) ? (
+            {can("NO_SALE") !== "DENY" && (
               <Pressable onPress={noSale}>
-                <Text style={ui.muted}>No sale (open drawer){drawerMsg ? ` · ${drawerMsg}` : ""}</Text>
+                <Text style={ui.muted}>
+                  No sale (open drawer){can("NO_SALE") === "PIN" ? " · needs PIN" : ""}
+                  {drawerMsg ? ` · ${drawerMsg}` : ""}
+                </Text>
               </Pressable>
-            ) : (
-              <Text style={ui.muted}>Price overrides and refunds need a manager.</Text>
             )}
           </>
         }
       />
 
       {discounting && (
-        <NumberPrompt
-          title="Line discount"
-          message={`Dollars off ${discounting.product.title}`}
-          initial={discounting.discountCents ? (discounting.discountCents / 100).toFixed(2) : ""}
-          onSubmit={(n) => {
-            const cents = Math.round(n * 100);
-            setLines((prev) => prev.map((l) => (l.variant.id === discounting.variant.id ? { ...l, discountCents: cents } : l)));
-          }}
+        <DiscountSheet
+          title={discounting === "cart" ? "Discount the whole cart" : `Discount: ${discounting.product.title}`}
+          grosses={(discounting === "cart" ? lines : [discounting]).map((l) => l.variant.priceCents * l.quantity)}
+          onApply={(d) => applyDiscount(discounting === "cart" ? lines : [discounting], d)}
+          onRemove={discounting !== "cart" && discounting.discountCents > 0 ? () => removeDiscount(discounting) : undefined}
           onClose={() => setDiscounting(null)}
         />
       )}
@@ -302,16 +397,20 @@ export function SellScreen() {
           onState={setPayState}
           customer={customer}
           onCancel={() => setTendering(false)}
-          submit={(tenders, idempotencyKey) =>
-            api("POST", "/orders/checkout", {
-              locationId: location.id,
-              customerId: customer?.id,
-              lines: lines.map((l) => ({ variantId: l.variant.id, quantity: l.quantity, discountCents: l.discountCents })),
-              tenders,
-              idempotencyKey,
-              rewardIds,
-            })
-          }
+          submit={async (tenders, idempotencyKey) => {
+            const body = { locationId: location.id, customerId: customer?.id, lines: cartLines, tenders, idempotencyKey, rewardIds };
+            try {
+              return await api("POST", "/orders/checkout", body, { approvalToken: discountApproval });
+            } catch (e) {
+              // Approval expired or settings changed: ask once more, then retry the same sale.
+              if (!(e instanceof ApiError) || e.code !== "APPROVAL_REQUIRED") throw e;
+              const d = (e.details ?? {}) as { permission?: never; permissions?: never[]; discountBps?: number };
+              const token = await askApproval({ permissions: d.permissions ?? [d.permission!], discountBps: d.discountBps });
+              if (!token) throw e;
+              setDiscountApproval(token);
+              return api("POST", "/orders/checkout", body, { approvalToken: token });
+            }
+          }}
           onDone={reset}
         />
       )}

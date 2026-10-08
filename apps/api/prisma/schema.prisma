@@ -43,8 +43,15 @@ model Staff {
   email     String    @unique
   /// bcrypt hash of the register PIN.
   pinHash   String
+  /// HMAC of the PIN (server secret), so a PIN alone finds its employee for
+  /// PIN sign-in and manager approvals. Makes PINs unique per store.
+  pinLookup String?   @unique
   role      StaffRole @default(CASHIER)
   active    Boolean   @default(true)
+  /// Per-employee permission overrides: { REFUND: "ALLOW", ... }.
+  permissionOverrides Json @default("{}")
+  /// Per-employee discount limit (bps of a line) without approval; null = role's.
+  discountMaxBps Int?
   createdAt DateTime  @default(now())
 
   orders    Order[]
@@ -362,6 +369,10 @@ model OrderLine {
   rewardDiscountCents Int @default(0)
   /// Portion of discountCents that came from automated deals.
   promoDiscountCents  Int @default(0)
+  /// Why a manual discount was given (snapshot of the reason's name).
+  discountReasonId String?
+  discountReason   String?
+  discountNote     String?
   /// Whether this line counted toward loyalty earning.
   earnsLoyalty   Boolean @default(false)
   taxable        Boolean
@@ -769,4 +780,82 @@ model Promotion {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// ─── Permissions, approvals, audit ───────────────────────────────
+
+/// Store's settings for a role (owners always have everything).
+model RolePolicy {
+  role           StaffRole @id
+  /// { PERMISSION: "ALLOW" | "PIN" | "DENY" }; missing = built-in default.
+  permissions    Json      @default("{}")
+  discountMaxBps Int
+  updatedAt      DateTime  @updatedAt
+}
+
+/// A manager's PIN approval for something an employee can't do alone.
+/// The token is the id: random, single use, short-lived.
+model ApprovalGrant {
+  id             String    @id
+  approverId     String
+  requesterId    String
+  permissions    String[]
+  /// The approver's discount limit, for discount approvals.
+  discountMaxBps Int
+  reason         String?
+  expiresAt      DateTime
+  usedAt         DateTime?
+  usedFor        String?
+  createdAt      DateTime  @default(now())
+
+  @@index([requesterId, createdAt])
+}
+
+/// Who did what at the register: voids, cart deletes, no-sales, approvals.
+model AuditEvent {
+  id         String   @id @default(cuid())
+  action     String
+  staffId    String?
+  approverId String?
+  locationId String?
+  details    Json     @default("{}")
+  /// HTTP status for logged requests (403s show denied attempts).
+  status     Int?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([action, createdAt])
+  @@index([staffId, createdAt])
+}
+
+// ─── Manual discount setup ───────────────────────────────────────
+
+/// Reasons a cashier must pick when giving a manual discount.
+model DiscountReason {
+  id           String   @id @default(cuid())
+  name         String   @unique
+  /// Make the cashier type a note too (e.g. "Price match" -> which store).
+  requiresNote Boolean  @default(false)
+  active       Boolean  @default(true)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+}
+
+enum DiscountKind {
+  PERCENT
+  AMOUNT
+}
+
+/// One-tap discount buttons at the register.
+model DiscountPreset {
+  id        String       @id @default(cuid())
+  label     String
+  kind      DiscountKind
+  /// bps for PERCENT (1000 = 10%), cents for AMOUNT.
+  value     Int
+  /// Reason filled in automatically when the button is used.
+  reasonId  String?
+  active    Boolean      @default(true)
+  sortOrder Int          @default(0)
+  createdAt DateTime     @default(now())
 }

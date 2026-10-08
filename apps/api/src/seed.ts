@@ -1,12 +1,12 @@
 /** Demo data: one store, three staff (PIN 1234), and a few TCG + sneaker products. */
-import bcrypt from "bcryptjs";
 import { prisma } from "./db.js";
 import { seedCategoriesAndDeals } from "./seedDeals.js";
+import { hashPin } from "./services/permissions.js";
 
-const pinHash = await bcrypt.hash("1234", 10);
 const location = await prisma.location.create({ data: { name: "Main Street", taxRateBps: 825 } });
-for (const [name, role] of [["Owner", "OWNER"], ["Manager", "MANAGER"], ["Cashier", "CASHIER"]] as const) {
-  await prisma.staff.create({ data: { name, email: `${role.toLowerCase()}@mypos.local`, pinHash, role } });
+// PINs must be unique: they identify the employee at the register.
+for (const [name, role, pin] of [["Owner", "OWNER", "1111"], ["Manager", "MANAGER", "2222"], ["Cashier", "CASHIER", "3333"]] as const) {
+  await prisma.staff.create({ data: { name, email: `${role.toLowerCase()}@mypos.local`, role, ...(await hashPin(prisma, pin)) } });
 }
 
 const products = [
@@ -76,5 +76,5 @@ for (const { variants, ...p } of products) {
 
 await seedCategoriesAndDeals();
 
-console.log(`Seeded location ${location.id}. Staff: owner@/manager@/cashier@mypos.local, PIN 1234`);
+console.log(`Seeded location ${location.id}. PINs: owner 1111, manager 2222, cashier 3333`);
 await prisma.$disconnect();

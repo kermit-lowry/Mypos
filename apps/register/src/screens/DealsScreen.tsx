@@ -118,7 +118,7 @@ export function DealsScreen() {
   const [deals, setDeals] = useState<Deal[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [editing, setEditing] = useState<Deal | null>(null);
-  const [view, setView] = useState<"deals" | "categories">("deals");
+  const [view, setView] = useState<"deals" | "categories" | "discounts">("deals");
 
   const load = useCallback(async () => {
     setDeals(await api<Deal[]>("GET", "/promotions"));
@@ -133,6 +133,7 @@ export function DealsScreen() {
       <View style={[ui.row, { gap: 8 }]}>
         <Button title="Deals" kind={view === "deals" ? "primary" : "secondary"} onPress={() => setView("deals")} style={{ flex: 1 }} />
         <Button title="Categories" kind={view === "categories" ? "primary" : "secondary"} onPress={() => setView("categories")} style={{ flex: 1 }} />
+        <Button title="Discount buttons" kind={view === "discounts" ? "primary" : "secondary"} onPress={() => setView("discounts")} style={{ flex: 1 }} />
       </View>
       {view === "deals" ? (
         <>
@@ -161,8 +162,10 @@ export function DealsScreen() {
             )}
           />
         </>
-      ) : (
+      ) : view === "categories" ? (
         <CategoryManager categories={categories} onChanged={load} />
+      ) : (
+        <DiscountSetup />
       )}
     </View>
   );
@@ -442,6 +445,119 @@ function CategoryManager({ categories, onChanged }: { categories: Category[]; on
         }}
       />
     </View>
+  );
+}
+
+// ── Manual discount buttons & reasons ────────────────────────────
+
+interface Reason {
+  id: string;
+  name: string;
+  requiresNote: boolean;
+  active: boolean;
+}
+interface Preset {
+  id: string;
+  label: string;
+  kind: "PERCENT" | "AMOUNT";
+  value: number;
+  reasonId: string | null;
+  active: boolean;
+}
+
+/** One-tap discount buttons for the register, and the reasons cashiers pick from. */
+function DiscountSetup() {
+  const [reasons, setReasons] = useState<Reason[]>([]);
+  const [presets, setPresets] = useState<Preset[]>([]);
+  const [reasonName, setReasonName] = useState("");
+  const [reasonNote, setReasonNote] = useState(false);
+  const [label, setLabel] = useState("");
+  const [kind, setKind] = useState<"PERCENT" | "AMOUNT">("PERCENT");
+  const [value, setValue] = useState("");
+  const [presetReason, setPresetReason] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setReasons(await api<Reason[]>("GET", "/discount-reasons?all=true"));
+    setPresets(await api<Preset[]>("GET", "/discount-presets?all=true"));
+  }, []);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const run = async (fn: () => Promise<unknown>) => {
+    setError(null);
+    try {
+      await fn();
+      await load();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    }
+  };
+
+  return (
+    <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 24 }}>
+      <Text style={ui.h2}>Discount buttons</Text>
+      <Text style={ui.muted}>Shown when a cashier taps Discount. Employees' discount limits and PIN rules still apply.</Text>
+      {presets.map((p) => (
+        <View key={p.id} style={[ui.row, { gap: 8, opacity: p.active ? 1 : 0.5 }]}>
+          <Text style={[ui.text, { flex: 1 }]}>
+            {p.label} · {p.kind === "PERCENT" ? `${p.value / 100}%` : formatCents(p.value)}
+            {p.reasonId ? ` · ${reasons.find((r) => r.id === p.reasonId)?.name ?? ""}` : ""}
+          </Text>
+          <Switch value={p.active} onValueChange={(active) => run(() => api("PATCH", `/discount-presets/${p.id}`, { active }))} />
+        </View>
+      ))}
+      <View style={[ui.row, { gap: 8 }]}>
+        <TextInput style={[ui.input, { flex: 2 }]} value={label} onChangeText={setLabel} placeholder="Button label, e.g. Employee 20%" placeholderTextColor={colors.muted} />
+        <Button title="%" kind={kind === "PERCENT" ? "primary" : "secondary"} onPress={() => setKind("PERCENT")} />
+        <Button title="$" kind={kind === "AMOUNT" ? "primary" : "secondary"} onPress={() => setKind("AMOUNT")} />
+        <TextInput style={[ui.input, { flex: 1 }]} value={value} onChangeText={setValue} keyboardType="decimal-pad" placeholder="Amount" placeholderTextColor={colors.muted} />
+      </View>
+      <Text style={ui.muted}>Reason filled in automatically (optional)</Text>
+      <Chips options={reasons.filter((r) => r.active).map((r) => [r.id, r.name])} selected={presetReason ? [presetReason] : []} onToggle={(id) => setPresetReason(presetReason === id ? null : id)} />
+      <Button
+        title="Add button"
+        disabled={!label.trim() || !(Number(value) > 0)}
+        onPress={() =>
+          run(async () => {
+            await api("POST", "/discount-presets", { label: label.trim(), kind, value: Math.round(Number(value) * 100), reasonId: presetReason });
+            setLabel("");
+            setValue("");
+            setPresetReason(null);
+          })
+        }
+      />
+
+      <Text style={[ui.h2, { marginTop: 12 }]}>Discount reasons</Text>
+      <Text style={ui.muted}>Once any reason exists, every manual discount needs one. Reasons are turned off, never deleted, so past sales keep theirs.</Text>
+      {reasons.map((r) => (
+        <View key={r.id} style={[ui.row, { gap: 8, opacity: r.active ? 1 : 0.5 }]}>
+          <Text style={[ui.text, { flex: 1 }]}>
+            {r.name}
+            {r.requiresNote ? " · needs a note" : ""}
+          </Text>
+          <Switch value={r.active} onValueChange={(active) => run(() => api("PATCH", `/discount-reasons/${r.id}`, { active }))} />
+        </View>
+      ))}
+      <View style={[ui.row, { gap: 8 }]}>
+        <TextInput style={[ui.input, { flex: 1 }]} value={reasonName} onChangeText={setReasonName} placeholder="e.g. Damaged box, Price match" placeholderTextColor={colors.muted} />
+        <Text style={ui.muted}>Needs note</Text>
+        <Switch value={reasonNote} onValueChange={setReasonNote} />
+      </View>
+      <Button
+        title="Add reason"
+        disabled={!reasonName.trim()}
+        onPress={() =>
+          run(async () => {
+            await api("POST", "/discount-reasons", { name: reasonName.trim(), requiresNote: reasonNote });
+            setReasonName("");
+            setReasonNote(false);
+          })
+        }
+      />
+      {error && <Text style={ui.error}>{error}</Text>}
+    </ScrollView>
   );
 }
 

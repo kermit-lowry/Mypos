@@ -4,9 +4,11 @@ import { FlatList, Text, TextInput, View } from "react-native";
 import { api, ApiError, type Customer, type Product, type Variant } from "../api";
 import { Button } from "../components/Button";
 import { CustomerPicker } from "../components/CustomerPicker";
+import { MarketBadge } from "../components/MarketBadge";
 import { SplitPane } from "../components/SplitPane";
 import { ProductSearch, variantLabel } from "../components/ProductSearch";
-import { isManager, useSession } from "../session";
+import { NotPermitted, useGuard } from "../approval";
+import { useCan, useSession } from "../session";
 import { colors, ui } from "../theme";
 
 interface BuyLine {
@@ -18,7 +20,9 @@ interface BuyLine {
 
 /** Trade-in counter: price what the customer brought, show cash vs credit, pay out. */
 export function BuylistScreen() {
-  const { location, staff } = useSession();
+  const { location } = useSession();
+  const guard = useGuard();
+  const can = useCan();
   const [lines, setLines] = useState<BuyLine[]>([]);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [busy, setBusy] = useState(false);
@@ -41,12 +45,15 @@ export function BuylistScreen() {
         customerId: customer?.id,
         lines: lines.map((l) => ({ variantId: l.variant.id, quantity: l.quantity, marketCents: l.marketCents })),
       });
-      const done = await api<{ paidCents: number }>("POST", `/buylist/${ticket.id}/accept`, { payout: kind, customerId: customer?.id });
+      const done = await guard("BUYLIST_PAYOUT", (t) =>
+        api<{ paidCents: number }>("POST", `/buylist/${ticket.id}/accept`, { payout: kind, customerId: customer?.id }, { approvalToken: t }),
+      );
+      if (!done) return;
       setMessage(`Buylist #${ticket.number}: paid ${formatCents(done.paidCents)} ${kind === "CASH" ? "cash" : "store credit"}`);
       setLines([]);
       setCustomer(null);
     } catch (e) {
-      setMessage(e instanceof ApiError ? e.message : String(e));
+      setMessage(e instanceof ApiError || e instanceof NotPermitted ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -70,6 +77,7 @@ export function BuylistScreen() {
                   {l.quantity}× {l.product.title}
                 </Text>
                 <Text style={ui.muted}>{variantLabel(l.variant)}</Text>
+              <MarketBadge market={l.variant.market} />
                 <View style={[ui.row, { gap: 8 }]}>
                   <Text style={ui.muted}>Market $</Text>
                   <TextInput
@@ -91,12 +99,12 @@ export function BuylistScreen() {
             )}
           />
           {message && <Text style={ui.text}>{message}</Text>}
-          {!isManager(staff) && lines.length > 0 && <Text style={ui.muted}>A manager must approve payouts.</Text>}
+          {can("BUYLIST_PAYOUT") === "PIN" && lines.length > 0 && <Text style={ui.muted}>Payouts need a manager's PIN.</Text>}
           <View style={[ui.row, { gap: 8 }]}>
             <Button
               title={`Cash ${formatCents(cash)}`}
               onPress={() => payout("CASH")}
-              disabled={!lines.length || !isManager(staff)}
+              disabled={!lines.length || can("BUYLIST_PAYOUT") === "DENY"}
               busy={busy}
               style={{ flex: 1 }}
             />
@@ -104,7 +112,7 @@ export function BuylistScreen() {
               title={`Credit ${formatCents(credit)}`}
               kind="good"
               onPress={() => payout("STORE_CREDIT")}
-              disabled={!lines.length || !customer || !isManager(staff)}
+              disabled={!lines.length || !customer || can("BUYLIST_PAYOUT") === "DENY"}
               busy={busy}
               style={{ flex: 1 }}
             />

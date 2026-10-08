@@ -2,9 +2,10 @@ import { CheckoutInput, CustomerInput, RefundInput } from "@mypos/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { conflict, notFound } from "../errors.js";
-import { actorOf, parse, requireRole } from "../http.js";
+import { actorOf, approvalTokenOf, parse, requirePermission, requireRole } from "../http.js";
 import { checkout } from "../services/checkout.js";
 import type { Ctx } from "../services/context.js";
+import { audit } from "../services/permissions.js";
 import { refundOrder } from "../services/refunds.js";
 import { loyaltyBalances } from "../services/loyalty.js";
 import { creditBalance, postCredit } from "../services/storeCredit.js";
@@ -12,11 +13,10 @@ import { creditBalance, postCredit } from "../services/storeCredit.js";
 export function salesRoutes(app: FastifyInstance, base: Ctx) {
   const { prisma } = base;
   const staff = { preHandler: requireRole("CASHIER") };
-  const manager = { preHandler: requireRole("MANAGER") };
 
   app.post("/orders/checkout", staff, async (req, reply) => {
     const input = parse(CheckoutInput, req.body);
-    const result = await checkout({ ...base, actor: actorOf(req) }, input);
+    const result = await checkout({ ...base, actor: actorOf(req), perms: req.perms, approvalToken: approvalTokenOf(req) }, input);
     if (result.replayed && result.order.status === "VOID") {
       throw conflict("ORDER_VOID", "This sale failed earlier; start a new sale", { orderId: result.order.id });
     }
@@ -42,10 +42,19 @@ export function salesRoutes(app: FastifyInstance, base: Ctx) {
     return o;
   });
 
-  app.post("/orders/:id/refund", manager, async (req) => {
+  app.post("/orders/:id/refund", { preHandler: requirePermission("REFUND") }, async (req) => {
     const { id } = req.params as { id: string };
     const input = parse(RefundInput, { ...(req.body as object), orderId: id });
-    return refundOrder({ ...base, actor: actorOf(req) }, input);
+    const result = await refundOrder({ ...base, actor: actorOf(req) }, input);
+    const order = await prisma.order.findUniqueOrThrow({ where: { id } });
+    await audit(prisma, {
+      action: "REFUND",
+      staffId: req.user.sub,
+      approverId: req.approverId,
+      locationId: order.locationId,
+      details: { orderId: id, orderNumber: order.number, amountCents: result.refundCents, legs: result.legs, reason: input.reason ?? null } as object,
+    });
+    return result;
   });
 
   // ── Customers & store credit ───────────────────────────────
@@ -67,14 +76,14 @@ export function salesRoutes(app: FastifyInstance, base: Ctx) {
     return { ...c, storeCreditCents, loyalty };
   });
 
-  app.post("/customers/:id/credit", manager, async (req) => {
+  app.post("/customers/:id/credit", { preHandler: requirePermission("ADJUST_BALANCES") }, async (req) => {
     const { id } = req.params as { id: string };
     const { amountCents, reason } = parse(z.object({ amountCents: z.number().int(), reason: z.string().min(1) }), req.body);
     const balance = await prisma.$transaction((tx) => postCredit(tx, { customerId: id, amountCents, reason }));
     return { storeCreditCents: balance };
   });
 
-  app.post("/gift-cards", manager, async (req) => {
+  app.post("/gift-cards", { preHandler: requirePermission("GIFT_CARD_ISSUE") }, async (req) => {
     const { code, amountCents } = parse(z.object({ code: z.string().min(6), amountCents: z.number().int().positive() }), req.body);
     return prisma.giftCard.create({ data: { code, balanceCents: amountCents } });
   });

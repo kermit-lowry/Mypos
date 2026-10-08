@@ -2,21 +2,21 @@ import { CONFIGURABLE_PRICED_TENDERS } from "@mypos/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { badRequest } from "../errors.js";
-import { parse, requireRole } from "../http.js";
+import { parse, requirePermission, requireRole } from "../http.js";
 import type { Ctx } from "../services/context.js";
 import { resolveTerminal } from "../services/charges.js";
 import { labelData, labelsHtml, labelsZpl, sendToPrinter } from "../services/labels.js";
 import { drawerKickBytes, receiptEscPos } from "../services/escpos.js";
+import { audit } from "../services/permissions.js";
 import { buildReceipt, receiptHtml, receiptTerminalHtml, receiptText } from "../services/receipts.js";
 
 /** Store settings, receipts, price labels, and the customer-facing display. */
 export function pricingRoutes(app: FastifyInstance, base: Ctx) {
   const { prisma, gateway } = base;
   const staff = { preHandler: requireRole("CASHIER") };
-  const owner = { preHandler: requireRole("OWNER") };
 
   /** Owner settings per location, including the dual pricing percentage. */
-  app.patch("/locations/:id", owner, async (req) => {
+  app.patch("/locations/:id", { preHandler: requirePermission("MANAGE_SETTINGS") }, async (req) => {
     const { id } = req.params as { id: string };
     const data = parse(
       z.object({
@@ -79,12 +79,12 @@ export function pricingRoutes(app: FastifyInstance, base: Ctx) {
   });
 
   /** "No sale": open the register's cash drawer. Managers only, and logged. */
-  app.post("/terminals/:id/drawer", { preHandler: requireRole("MANAGER") }, async (req) => {
+  app.post("/terminals/:id/drawer", { preHandler: requirePermission("NO_SALE") }, async (req) => {
     const { id } = req.params as { id: string };
     const t = await prisma.terminal.findUniqueOrThrow({ where: { id } });
     if (!t.receiptPrinterHost) throw badRequest("NO_DRAWER", "No receipt printer (and drawer) set up for this register");
     await sendToPrinter(t.receiptPrinterHost, drawerKickBytes());
-    req.log.info({ terminalId: id, staff: (req.user as { sub?: string } | undefined)?.sub }, "cash drawer opened (no sale)");
+    await audit(prisma, { action: "NO_SALE", staffId: req.user.sub, approverId: req.approverId, locationId: t.locationId, details: { terminalId: id } });
     return { opened: true };
   });
 

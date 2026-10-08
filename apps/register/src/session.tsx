@@ -1,3 +1,4 @@
+import type { EffectivePermissions, Permission, PermissionLevel } from "@mypos/shared";
 import { createContext, useContext } from "react";
 import type { Location } from "./api";
 
@@ -10,6 +11,8 @@ export interface Staff {
 export interface Session {
   staff: Staff;
   location: Location;
+  /** What this employee may do: ALLOW, PIN (needs a manager), or DENY. */
+  permissions: EffectivePermissions;
   signOut: () => void;
 }
 
@@ -22,3 +25,9 @@ export function useSession(): Session {
 }
 
 export const isManager = (s: Staff) => s.role === "MANAGER" || s.role === "OWNER";
+
+/** This employee's level for a permission. */
+export function useCan(): (p: Permission) => PermissionLevel {
+  const { permissions } = useSession();
+  return (p) => permissions.levels[p] ?? "DENY";
+}
