@@ -521,7 +521,7 @@ function ReportView({ report, expected }: { report: DrawerReport | null | undefi
       {!!report.byEmployee?.length && (
         <Section title="By employee">
           {report.byEmployee.map((e) => (
-            <Row key={e.staff} label={`${e.staff} · ${e.orders.toLocaleString()} orders`} value={e.netCents} />
+            <Row key={e.staffId ?? e.name} label={`${e.name} · ${e.orders.toLocaleString()} ${e.orders === 1 ? "order" : "orders"}`} value={e.netCents} />
           ))}
         </Section>
       )}

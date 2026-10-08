@@ -276,7 +276,7 @@ export interface DrawerReport {
   };
   tenders?: { tender: string; count: number; netCents: number }[];
   tradeIns?: { tickets?: number; cashCents?: number; creditCents?: number; [k: string]: unknown };
-  byEmployee?: { staff: string; orders: number; netCents: number }[];
+  byEmployee?: { staffId?: string | null; name: string; orders: number; netCents: number; collectedCents?: number }[];
 }
 
 /** One cash drawer from "start shift" to "close". */
