@@ -169,6 +169,8 @@ export function presentOccurrence(o: OccRow) {
     checklistDone: doneOf(o),
     priority: o.task.priority,
     recurrence: o.task.recurrence,
+    daysOfWeek: o.task.daysOfWeek,
+    dayOfMonth: o.task.dayOfMonth,
     requireNote: o.task.requireNote,
     dueOn: dateToDay(o.dueOn),
     dueAt: o.dueAt,
@@ -233,6 +235,9 @@ export async function materialize(db: Db, input: { locationId: string; from?: Da
   const r = data.length ? await db.taskOccurrence.createMany({ data, skipDuplicates: true }) : { count: 0 };
   return { created: r.count, from, to };
 }
+
+/** Who a task can be assigned to: the active employees, by name (for people who manage tasks but not staff). */
+export const assignees = (db: Db) => db.staff.findMany({ where: { active: true }, select: { id: true, name: true, role: true }, orderBy: { name: "asc" } });
 
 /** Every active location, so every-store tasks and location-less reads cover them all. */
 const activeLocations = (db: Db) => db.location.findMany({ where: { active: true }, orderBy: { createdAt: "asc" } });

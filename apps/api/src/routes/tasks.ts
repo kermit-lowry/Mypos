@@ -56,6 +56,9 @@ export function taskRoutes(app: FastifyInstance, base: Ctx) {
     active: z.boolean().optional(),
   });
 
+  /** The active employees a task can be assigned to (managing tasks doesn't need the staff pages). */
+  app.get("/tasks/assignees", manage, async () => ({ employees: await T.assignees(prisma) }));
+
   /** Every task definition (`locationId` includes every-store tasks), with names and `nextDueOn`. */
   app.get("/tasks", manage, async (req) => {
     const q = parse(z.object({ locationId: z.string().optional(), active: Flag.optional(), recurrence: z.nativeEnum(TaskRecurrence).optional(), assigneeId: z.string().optional() }), req.query);

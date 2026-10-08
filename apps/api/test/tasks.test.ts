@@ -350,6 +350,18 @@ describe("defining tasks", () => {
     expect(once).toMatchObject({ endsOn: null, daysOfWeek: [], dayOfMonth: null, nextDueOn: today, startsOn: today });
   });
 
+  it("offers the active employees as assignees to anyone who manages tasks", async () => {
+    expect((await w.as(w.cashier, "GET", "/tasks/assignees")).status).toBe(403);
+    await w.as(w.owner, "PATCH", `/staff/${ids.cashier}`, { active: false });
+    const r = await w.as(w.manager, "GET", "/tasks/assignees");
+    expect(r.status).toBe(200);
+    expect(r.body.employees).toEqual([
+      { id: ids.manager, name: "MANAGER", role: "MANAGER" },
+      { id: ids.owner, name: "OWNER", role: "OWNER" },
+    ]);
+    expect((await w.as(w.manager, "GET", "/staff")).status).toBe(403);
+  });
+
   it("lists them with names and the next due day; cashiers can't", async () => {
     const t = await mk({ title: "Count the safe", recurrence: "WEEKLY", daysOfWeek: [weekdayOf(day(2))], assigneeType: "EMPLOYEE", assigneeId: ids.cashier, dueTime: "12:00" });
     expect((await w.as(w.cashier, "GET", "/tasks")).status).toBe(403);
