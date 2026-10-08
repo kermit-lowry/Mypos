@@ -19,6 +19,7 @@ import { salesRoutes } from "./routes/sales.js";
 import { shiftRoutes } from "./routes/shifts.js";
 import { timeClockRoutes } from "./routes/timeclock.js";
 import { staffRoutes } from "./routes/staff.js";
+import { taskRoutes } from "./routes/tasks.js";
 import { storefrontRoutes } from "./routes/storefront.js";
 import { terminalRoutes } from "./routes/terminals.js";
 import { registerRequestLog } from "./services/requestLog.js";
@@ -71,6 +72,7 @@ export async function buildApp(deps: { prisma: PrismaClient; gateway: PaymentGat
   shiftRoutes(app, ctx);
   timeClockRoutes(app, ctx);
   layawayRoutes(app, ctx);
+  taskRoutes(app, ctx);
   fulfillmentRoutes(app, ctx);
   dealRoutes(app, ctx);
   purchasingRoutes(app, ctx);

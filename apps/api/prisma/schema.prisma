@@ -71,6 +71,8 @@ model Location {
   purchaseOrders PurchaseOrder[]
   transfersOut   Transfer[] @relation("TransferFrom")
   transfersIn    Transfer[] @relation("TransferTo")
+  tasks           Task[]
+  taskOccurrences TaskOccurrence[]
 }
 
 model Staff {
@@ -100,6 +102,9 @@ model Staff {
   drawersClosed DrawerSession[] @relation("DrawerClosedBy")
   cashMovements CashMovement[]
   timeEntries   TimeEntry[]
+  tasksCreated    Task[]           @relation("TaskCreatedBy")
+  tasksAssigned   Task[]           @relation("TaskAssignee")
+  taskCompletions TaskOccurrence[]
 }
 
 enum StaffRole {
@@ -1338,4 +1343,99 @@ model LayawayLine {
   taxable        Boolean
   /// Unit cost when reserved (for profit on the eventual sale).
   costCents      Int?
+}
+
+// ─── Employee tasks ──────────────────────────────────────────────
+
+enum TaskRecurrence {
+  ONCE
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+enum TaskPriority {
+  LOW
+  NORMAL
+  HIGH
+}
+
+enum TaskAssignee {
+  ANYONE
+  ROLE
+  EMPLOYEE
+}
+
+enum TaskStatus {
+  OPEN
+  DONE
+  SKIPPED
+}
+
+/// A task a manager defines: one-off or recurring, for a store or every
+/// store, for anyone, a role, or one employee. Each day's instance is a
+/// TaskOccurrence, which is what employees complete.
+model Task {
+  id           String         @id @default(cuid())
+  /// null = every store
+  locationId   String?
+  location     Location?      @relation(fields: [locationId], references: [id])
+  title        String
+  instructions String?
+  /// Sub-steps shown as a checklist, e.g. ["Count the safe", "Wipe the counters"]
+  checklist    Json           @default("[]")
+  priority     TaskPriority   @default(NORMAL)
+  recurrence   TaskRecurrence
+  /// WEEKLY only: 0 = Sunday … 6 = Saturday, at least one
+  daysOfWeek   Int[]          @default([])
+  /// MONTHLY only: 1..31; a day past the month's end means the last day of that month
+  dayOfMonth   Int?
+  /// "HH:mm" store-local time the task is due by; null = end of the day
+  dueTime      String?
+  /// ONCE: the day it is due. Recurring: the first day it applies.
+  startsOn     DateTime       @db.Date
+  endsOn       DateTime?      @db.Date
+  assigneeType TaskAssignee   @default(ANYONE)
+  assigneeRole StaffRole?
+  assigneeId   String?
+  assignee     Staff?         @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  /// Completing requires a note (e.g. a reading or a count)
+  requireNote  Boolean        @default(false)
+  active       Boolean        @default(true)
+  createdById  String?
+  createdBy    Staff?         @relation("TaskCreatedBy", fields: [createdById], references: [id])
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  occurrences TaskOccurrence[]
+
+  @@index([locationId, active])
+}
+
+/// One day's instance of a task at a location.
+model TaskOccurrence {
+  id            String     @id @default(cuid())
+  taskId        String
+  task          Task       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  locationId    String
+  location      Location   @relation(fields: [locationId], references: [id])
+  /// The store-local day this instance is for
+  dueOn         DateTime   @db.Date
+  /// Instant it is due by (dueTime in the store's timezone, else the end of that local day)
+  dueAt         DateTime
+  status        TaskStatus @default(OPEN)
+  /// Indices of checklist steps ticked so far
+  checklistDone Json       @default("[]")
+  completedById String?
+  completedBy   Staff?     @relation(fields: [completedById], references: [id])
+  completedAt   DateTime?
+  /// True when it was completed after dueAt
+  late          Boolean    @default(false)
+  note          String?
+  skipReason    String?
+  createdAt     DateTime   @default(now())
+
+  @@unique([taskId, locationId, dueOn])
+  @@index([locationId, dueOn, status])
+  @@index([completedById, completedAt])
 }

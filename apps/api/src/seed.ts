@@ -94,5 +94,18 @@ for (const p of allProducts) {
 
 await seedCategoriesAndDeals();
 
+// Employee tasks: what the sign-in screen shows (seeded once; a rerun of the seed starts from an empty database).
+const [owner, cashier] = await Promise.all([prisma.staff.findFirstOrThrow({ where: { role: "OWNER" } }), prisma.staff.findFirstOrThrow({ where: { role: "CASHIER" } })]);
+const startsOn = new Date("2026-10-01T00:00:00.000Z");
+for (const t of [
+  { title: "Opening checklist", recurrence: "DAILY" as const, priority: "HIGH" as const, dueTime: "10:30", checklist: ["Count the float", "Turn on the customer display", "Check online orders", "Wipe the glass case"] },
+  { title: "Count the safe", recurrence: "WEEKLY" as const, daysOfWeek: [1], assigneeType: "ROLE" as const, assigneeRole: "MANAGER" as const, requireNote: true, dueTime: "12:00" },
+  { title: "Inventory count: singles case", recurrence: "MONTHLY" as const, dayOfMonth: 1, assigneeType: "EMPLOYEE" as const, assigneeId: cashier.id, instructions: "Count every binder and the display case; note any discrepancies." },
+]) {
+  if (!(await prisma.task.findFirst({ where: { title: t.title, locationId: location.id } }))) {
+    await prisma.task.create({ data: { ...t, locationId: location.id, startsOn, createdById: owner.id } });
+  }
+}
+
 console.log(`Seeded location ${location.id}. PINs: owner 1111, manager 2222, cashier 3333`);
 await prisma.$disconnect();
