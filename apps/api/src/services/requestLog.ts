@@ -8,7 +8,12 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
  */
 const SKIP = new Set(["PUT /displays/:channel", "POST /cart/quote", "POST /loyalty/quote", "POST /storefront/quote"]);
 
-const SECRET_KEYS = /pin|token|password|secret|giftcardcode|cardnumber|cvv/i;
+/** Sign-in and approval bodies are credentials through and through: never logged, whatever the fields are called. */
+const NO_BODY = new Set(["POST /auth/login", "POST /auth/web-login", "POST /auth/password", "POST /auth/approve"]);
+
+// Whole-word where a bare key is the secret (`pin`, `code`, `current`), so
+// `shippingCents`, `barcode`, and `currentStock` stay readable.
+const SECRET_KEYS = /^current$|^code$|^otp$|^pin$|pinhash|pinlookup|token|password|secret|giftcardcode|cardnumber|cvv/i;
 const MAX_BYTES = 8_000;
 
 /** Copy of a request body with secrets replaced and long values cut. */
@@ -27,8 +32,10 @@ export function registerRequestLog(app: FastifyInstance, prisma: PrismaClient) {
     if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return;
     const route = `${req.method} ${req.routeOptions.url ?? req.url.split("?")[0]}`;
     if (SKIP.has(route)) return;
-    let details: Prisma.InputJsonValue = { route, params: redact(req.params) as Prisma.InputJsonValue, body: redact(req.body) as Prisma.InputJsonValue };
-    if (JSON.stringify(details).length > MAX_BYTES) details = { route, params: redact(req.params) as Prisma.InputJsonValue, body: "[too large to log]" };
+    const params = redact(req.params) as Prisma.InputJsonValue;
+    const body = NO_BODY.has(route) ? "[credentials omitted]" : (redact(req.body) as Prisma.InputJsonValue);
+    let details: Prisma.InputJsonValue = { route, params, body };
+    if (JSON.stringify(details).length > MAX_BYTES) details = { route, params, body: "[too large to log]" };
     const user = req.user as { sub?: string } | undefined;
     try {
       await prisma.auditEvent.create({

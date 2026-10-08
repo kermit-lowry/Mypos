@@ -1,8 +1,9 @@
 import { CONFIGURABLE_PRICED_TENDERS } from "@mypos/shared";
+import type { Prisma } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { badRequest } from "../errors.js";
-import { parse, requirePermission, requireRole } from "../http.js";
+import { authorize, parse, requirePermission, requireRole } from "../http.js";
 import type { Ctx } from "../services/context.js";
 import { resolveTerminal } from "../services/charges.js";
 import { labelData, labelsHtml, labelsZpl, sendToPrinter } from "../services/labels.js";
@@ -32,7 +33,14 @@ export function pricingRoutes(app: FastifyInstance, base: Ctx) {
       }),
       req.body,
     );
-    return prisma.location.update({ where: { id }, data });
+    const before = await prisma.location.findUniqueOrThrow({ where: { id } });
+    const after = await prisma.location.update({ where: { id }, data });
+    const changes: Record<string, Prisma.InputJsonValue> = {};
+    for (const k of Object.keys(data) as (keyof typeof data)[]) {
+      if (JSON.stringify(before[k]) !== JSON.stringify(after[k])) changes[k] = { from: before[k], to: after[k] };
+    }
+    if (Object.keys(changes).length) await audit(prisma, { action: "SETTINGS_UPDATED", staffId: req.user.sub, locationId: id, details: { changes } });
+    return after;
   });
 
   // ── Receipts ───────────────────────────────────────────────
@@ -52,7 +60,9 @@ export function pricingRoutes(app: FastifyInstance, base: Ctx) {
   /**
    * Print a receipt at a register: on its ESC/POS receipt printer if it has
    * one, else on the PAX terminal's built-in printer. `openDrawer` also pops
-   * the cash drawer plugged into the receipt printer (cash sales).
+   * the cash drawer plugged into the receipt printer. The register does that
+   * for change right after a cash sale; for any other order it's a no-sale,
+   * which needs NO_SALE (a manager's PIN for cashiers) and is logged as one.
    */
   app.post("/orders/:id/receipt/print", staff, async (req) => {
     const { id } = req.params as { id: string };
@@ -60,7 +70,13 @@ export function pricingRoutes(app: FastifyInstance, base: Ctx) {
       z.object({ terminalId: z.string(), target: z.enum(["auto", "printer", "terminal"]).default("auto"), openDrawer: z.boolean().default(false) }),
       req.body,
     );
-    const order = await prisma.order.findUniqueOrThrow({ where: { id } });
+    const order = await prisma.order.findUniqueOrThrow({ where: { id }, include: { payments: true } });
+    const ownRecentCashSale =
+      order.status === "PAID" &&
+      order.staffId === req.user.sub &&
+      Date.now() - order.createdAt.getTime() < 10 * 60_000 &&
+      order.payments.some((p) => p.tender === "CASH" && p.status === "APPROVED" && p.amountCents > 0);
+    if (openDrawer && !ownRecentCashSale) await authorize(req, "NO_SALE", "drawer via receipt print");
     const terminal = await resolveTerminal(prisma, terminalId, order.locationId);
     const { receiptPrinterHost } = await prisma.terminal.findUniqueOrThrow({ where: { id: terminal.id } });
     const receipt = await buildReceipt(prisma, id);
@@ -69,6 +85,15 @@ export function pricingRoutes(app: FastifyInstance, base: Ctx) {
     if (usePrinter) {
       if (!receiptPrinterHost) throw badRequest("NO_PRINTER", "No receipt printer set up for this register");
       await sendToPrinter(receiptPrinterHost, receiptEscPos(receipt, { openDrawer }));
+      if (openDrawer) {
+        const details = { orderId: id, orderNumber: order.number, terminalId: terminal.id };
+        await audit(
+          prisma,
+          ownRecentCashSale
+            ? { action: "DRAWER_OPEN", staffId: req.user.sub, locationId: order.locationId, details: { ...details, trigger: "cash_sale" } }
+            : { action: "NO_SALE", staffId: req.user.sub, approverId: req.approverId, locationId: order.locationId, details: { ...details, trigger: "reprint" } },
+        );
+      }
       return { printed: true, on: "printer" };
     }
     if (openDrawer) throw badRequest("NO_DRAWER", "Cash drawers open through a receipt printer; none is set up for this register");

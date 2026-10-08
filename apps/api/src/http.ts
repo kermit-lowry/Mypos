@@ -13,10 +13,13 @@ export function parse<T>(schema: ZodType<T, ZodTypeDef, unknown>, data: unknown)
   return r.data;
 }
 
+/** Where a session was opened: the back-office website, or a register (PIN). */
+export type SessionVia = "web" | "register";
+
 declare module "@fastify/jwt" {
   interface FastifyJWT {
-    payload: { sub: string; role: StaffRole };
-    user: { sub: string; role: StaffRole };
+    payload: { sub: string; role: StaffRole; via?: SessionVia };
+    user: { sub: string; role: StaffRole; via?: SessionVia };
   }
 }
 
@@ -53,6 +56,9 @@ export function requireStaff() {
     if (!staff || !staff.active) throw new AppError(401, "UNAUTHENTICATED", "This account is no longer active");
     req.staffRole = staff.role;
     req.perms = await permissionsFor(prisma, staff);
+    // A website session keeps needing back-office access, not only at sign-in.
+    // 401 so the site drops the token; register sessions aren't gated this way.
+    if (req.user.via === "web" && req.perms.levels.BACK_OFFICE_LOGIN === "DENY") throw new AppError(401, "UNAUTHENTICATED", "Back-office access was removed");
   };
 }
 

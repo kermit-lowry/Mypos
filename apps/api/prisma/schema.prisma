@@ -1007,7 +1007,9 @@ model ApprovalGrant {
   approverId     String
   requesterId    String
   permissions    String[]
-  /// The approver's discount limit, for discount approvals.
+  /// Most this grant may discount (bps of a line): the amount the approval
+  /// was asked for, capped at the approver's own limit. Not a blank cheque
+  /// for the approver's whole limit.
   discountMaxBps Int
   reason         String?
   expiresAt      DateTime

@@ -44,6 +44,81 @@ describe("back-office sign-in", () => {
     expect((await w.as(w.manager, "POST", "/auth/password", { current: PINS.MANAGER, password: "a long new password" })).status).toBe(200);
     const manager = await prisma.staff.findFirstOrThrow({ where: { role: "MANAGER" } });
     expect((await w.app.inject({ method: "POST", url: "/auth/web-login", payload: { email: manager.email, password: "a long new password" } })).statusCode).toBe(200);
+    // The PIN went over as `current`; neither it nor the password may reach the request log.
+    const requests = await w.as(w.manager, "GET", "/audit?kind=requests");
+    expect(JSON.stringify(requests)).not.toContain(PINS.MANAGER);
+    expect(JSON.stringify(requests)).not.toContain("a long new password");
+    expect(requests.body.find((r: any) => r.details.route === "POST /auth/password")).toMatchObject({ staffName: "MANAGER", status: 200, details: { body: "[credentials omitted]" } });
+    expect(requests.body.find((r: any) => r.details.route === "POST /auth/web-login")).toMatchObject({ status: 200, details: { body: "[credentials omitted]" } });
+  });
+
+  it("locks out after repeated wrong passwords, and says so in the log", async () => {
+    const owner = await prisma.staff.findFirstOrThrow({ where: { role: "OWNER" } });
+    await w.as(w.owner, "PATCH", `/staff/${owner.id}`, { password: "correct horse battery" });
+    const attempts = [];
+    for (let i = 0; i < 6; i++) attempts.push((await w.app.inject({ method: "POST", url: "/auth/web-login", payload: { email: owner.email, password: `wrong ${i}` } })).statusCode);
+    expect(attempts).toEqual([401, 401, 401, 401, 401, 429]);
+    // The right password doesn't help while locked out.
+    expect((await w.app.inject({ method: "POST", url: "/auth/web-login", payload: { email: owner.email, password: "correct horse battery" } })).statusCode).toBe(429);
+    const log = await w.as(w.manager, "GET", "/audit?action=LOGIN_FAILED");
+    const locked = log.body.filter((r: any) => r.details.reason === "LOCKED_OUT");
+    expect(locked.length).toBe(2);
+    expect(locked[0]).toMatchObject({ staffName: null, details: { method: "web", email: owner.email, reason: "LOCKED_OUT" } });
+    expect(locked[0].ip).toBeTruthy();
+  });
+
+  it("an owner can create an employee with a website password", async () => {
+    const created = await w.as(w.owner, "POST", "/staff", {
+      name: "Nina",
+      email: "nina@shop.test",
+      pin: "4321",
+      password: "ninas first password",
+      permissionOverrides: { BACK_OFFICE_LOGIN: "ALLOW" },
+    });
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ hasPin: true, hasPassword: true });
+    const login = await w.app.inject({ method: "POST", url: "/auth/web-login", payload: { email: "nina@shop.test", password: "ninas first password" } });
+    expect(login.statusCode).toBe(200);
+    expect(login.json().staff.name).toBe("Nina");
+    const events = await w.as(w.manager, "GET", "/audit?action=STAFF_CREATED");
+    expect(events.body[0].details).toMatchObject({ target: created.body.id, targetName: "Nina", role: "CASHIER", permissionOverrides: { BACK_OFFICE_LOGIN: "ALLOW" }, passwordSet: true });
+    const everything = JSON.stringify([events.body, (await w.as(w.manager, "GET", "/audit?kind=requests")).body]);
+    expect(everything).not.toContain("ninas first password");
+    expect(everything).not.toContain("4321");
+  });
+
+  it("losing back-office access ends the website session, but not the register one", async () => {
+    const manager = await prisma.staff.findFirstOrThrow({ where: { role: "MANAGER" } });
+    await w.as(w.owner, "PATCH", `/staff/${manager.id}`, { password: "manager password 1" });
+    const login = await w.app.inject({ method: "POST", url: "/auth/web-login", payload: { email: manager.email, password: "manager password 1" } });
+    const web = login.json().token as string;
+    expect((await w.as(web, "GET", "/auth/me")).body.via).toBe("web");
+    expect((await w.as(w.manager, "GET", "/auth/me")).body.via).toBe("register");
+    expect((await w.as(web, "GET", `/dashboard?locationId=${w.locationId}`)).status).toBe(200);
+
+    await w.as(w.owner, "PATCH", `/staff/${manager.id}`, { permissionOverrides: { BACK_OFFICE_LOGIN: "DENY" } });
+    expect((await w.as(web, "GET", "/auth/me")).status).toBe(401);
+    expect((await w.as(web, "GET", `/dashboard?locationId=${w.locationId}`)).status).toBe(401);
+    expect((await w.as(w.manager, "GET", "/customers?q=a")).status).toBe(200);
+    expect((await w.as(w.manager, "GET", "/auth/me")).status).toBe(200);
+  });
+});
+
+describe("request log", () => {
+  it("never records gift card codes, but ordinary amounts like shipping stay readable", async () => {
+    expect((await w.as(w.manager, "POST", "/gift-cards", { code: "GIFT-0001", amountCents: 5000 })).status).toBe(200);
+    const vendor = await w.as(w.manager, "POST", "/vendors", { name: "Southern Hobby" });
+    const po = await w.as(w.manager, "POST", "/purchase-orders", {
+      vendorId: vendor.body.id,
+      locationId: w.locationId,
+      shippingCents: 1500,
+      lines: [{ variantId: v.nm, quantity: 1, unitCostCents: 400 }],
+    });
+    expect(po.status).toBe(201);
+    const requests = await w.as(w.manager, "GET", "/audit?kind=requests");
+    expect(JSON.stringify(requests)).not.toContain("GIFT-0001");
+    expect(requests.body.find((r: any) => r.details.route === "POST /gift-cards").details.body).toEqual({ code: "[redacted]", amountCents: 5000 });
+    expect(requests.body.find((r: any) => r.details.route === "POST /purchase-orders").details.body).toMatchObject({ shippingCents: 1500, vendorId: vendor.body.id });
   });
 });
 

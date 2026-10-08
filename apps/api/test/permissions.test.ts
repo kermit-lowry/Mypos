@@ -59,6 +59,29 @@ describe("manager PIN approvals", () => {
     expect((await approve("0000", ["REFUND"])).body.error).toBe("BAD_PIN");
   });
 
+  it("failed approvals are logged, without the PIN", async () => {
+    expect((await approve("0000", ["REFUND"])).body.error).toBe("BAD_PIN");
+    expect((await approve(PINS.CASHIER, ["REFUND"], { locationId: w.locationId })).body.error).toBe("APPROVER_NOT_ALLOWED");
+    await w.as(w.owner, "PUT", "/roles/MANAGER", { permissions: {}, discountMaxBps: 2000 });
+    expect((await approve(PINS.MANAGER, ["DISCOUNT_LINE"], { discountBps: 3000 })).body.error).toBe("APPROVER_LIMIT");
+    const log = await w.as(w.manager, "GET", "/audit?action=APPROVAL_FAILED");
+    expect(log.body.map((r: any) => r.details.reason)).toEqual(["APPROVER_LIMIT", "APPROVER_NOT_ALLOWED", "BAD_PIN"]);
+    expect(log.body[0]).toMatchObject({ staffName: "CASHIER", approverName: "MANAGER", details: { permissions: ["DISCOUNT_LINE"], discountBps: 3000, approverMaxBps: 2000 } });
+    expect(log.body[1]).toMatchObject({ staffName: "CASHIER", approverName: "CASHIER", locationId: w.locationId, details: { missing: ["REFUND"] } });
+    expect(log.body[2]).toMatchObject({ staffName: "CASHIER", approverName: null, details: { permissions: ["REFUND"], discountBps: null } });
+    expect(log.body.every((r: any) => r.ip)).toBe(true);
+    const text = JSON.stringify(log.body.map((r: any) => r.details));
+    for (const pin of ["0000", PINS.CASHIER, PINS.MANAGER, PINS.OWNER]) expect(text).not.toContain(pin);
+  });
+
+  it("a locked-out approver is logged too", async () => {
+    for (let i = 0; i < 5; i++) await approve("0000", ["REFUND"]);
+    expect((await approve(PINS.MANAGER, ["REFUND"])).status).toBe(429);
+    const log = await w.as(w.manager, "GET", "/audit?action=APPROVAL_FAILED");
+    expect(log.body[0].details).toMatchObject({ reason: "LOCKED_OUT", permissions: ["REFUND"] });
+    expect(JSON.stringify(log.body)).not.toContain(PINS.MANAGER);
+  });
+
   it("an approval only works for the employee who asked", async () => {
     const grant = await approve(PINS.OWNER, ["NO_SALE"], {}, w.cashier);
     const t = await prisma.terminal.create({ data: { locationId: w.locationId, name: "T", gatewayRef: "1", receiptPrinterHost: "127.0.0.1:1" } });
@@ -90,6 +113,25 @@ describe("discount limits", () => {
     await w.as(w.owner, "PUT", "/roles/MANAGER", { permissions: {}, discountMaxBps: 2000 });
     const res = await approve(PINS.MANAGER, ["DISCOUNT_LINE"], { discountBps: 3000 });
     expect(res.body.error).toBe("APPROVER_LIMIT");
+  });
+
+  it("a discount approval covers the amount it was asked for, not the approver's whole limit", async () => {
+    const grant = await approve(PINS.MANAGER, ["DISCOUNT_LINE"], { discountBps: 1500 });
+    expect(grant.status).toBe(200);
+    const body = sale([{ variantId: v.nm, quantity: 1, discountCents: 300 }], [{ type: "CASH", amountCents: 758 }]);
+    const res = await withApproval(grant.body.token, "POST", "/orders/checkout", body);
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toMatchObject({ error: "APPROVAL_REQUIRED", details: { permission: "DISCOUNT_LINE", discountBps: 3000 } });
+    // 15% is fine with it.
+    const ok = await withApproval(grant.body.token, "POST", "/orders/checkout", sale([{ variantId: v.nm, quantity: 1, discountCents: 150 }], [{ type: "CASH", amountCents: 920 }]));
+    expect(ok.statusCode).toBe(201);
+  });
+
+  it("a discount approval has to say how much", async () => {
+    const res = await approve(PINS.MANAGER, ["DISCOUNT_LINE"]);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("DISCOUNT_BPS_REQUIRED");
+    expect((await approve(PINS.MANAGER, ["DISCOUNT_LINE"], { discountBps: 0 })).status).toBe(200);
   });
 
   it("price overrides need approval for cashiers and are logged", async () => {
@@ -125,13 +167,119 @@ describe("role and employee settings", () => {
     expect(JSON.stringify(listed.body)).not.toContain("pinHash");
   });
 
-  it("someone with staff rights can't grant permissions they don't have", async () => {
-    const manager = await prisma.staff.findFirstOrThrow({ where: { role: "MANAGER" } });
-    await w.as(w.owner, "PATCH", `/staff/${manager.id}`, { permissionOverrides: { MANAGE_STAFF: "ALLOW" } });
+  it("page and sign-in permissions can't be set to PIN", async () => {
+    const res = await w.as(w.owner, "PUT", "/roles/MANAGER", { permissions: { VIEW_REPORTS: "PIN" }, discountMaxBps: 1000 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("VALIDATION");
+    expect(JSON.stringify(res.body.details)).toContain("VIEW_REPORTS");
     const cashier = await prisma.staff.findFirstOrThrow({ where: { role: "CASHIER" } });
-    const res = await w.as(w.manager, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: { MANAGE_SETTINGS: "ALLOW" } });
-    expect(res.status).toBe(403);
-    expect((await w.as(w.manager, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: { REFUND: "ALLOW" } })).status).toBe(200);
+    expect((await w.as(w.owner, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: { MANAGE_STAFF: "PIN" } })).status).toBe(400);
+    expect((await w.as(w.owner, "POST", "/staff", { name: "New", email: "new@shop.test", pin: "5555", permissionOverrides: { BACK_OFFICE_LOGIN: "PIN" } })).status).toBe(400);
+    expect((await w.as(w.owner, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: { REFUND: "PIN", VIEW_REPORTS: "ALLOW" } })).status).toBe(200);
+  });
+
+  it("role changes are logged with the policy before and after", async () => {
+    await w.as(w.owner, "PUT", "/roles/CASHIER", { permissions: { REFUND: "DENY" }, discountMaxBps: 500 });
+    await w.as(w.owner, "PUT", "/roles/CASHIER", { permissions: { REFUND: "PIN" }, discountMaxBps: 800 });
+    const log = await w.as(w.manager, "GET", "/audit?action=ROLE_UPDATED");
+    expect(log.body[1].details).toEqual({ role: "CASHIER", before: null, after: { permissions: { REFUND: "DENY" }, discountMaxBps: 500 } });
+    expect(log.body[0].details).toEqual({ role: "CASHIER", before: { permissions: { REFUND: "DENY" }, discountMaxBps: 500 }, after: { permissions: { REFUND: "PIN" }, discountMaxBps: 800 } });
+  });
+
+  describe("a manager with staff rights", () => {
+    let manager: { id: string };
+    let cashier: { id: string };
+    let other: { id: string };
+    beforeEach(async () => {
+      manager = await prisma.staff.findFirstOrThrow({ where: { role: "MANAGER" } });
+      cashier = await prisma.staff.findFirstOrThrow({ where: { role: "CASHIER" } });
+      // The owner lets the manager run staff, but they can't refund and are capped at 10%.
+      await w.as(w.owner, "PATCH", `/staff/${manager.id}`, { permissionOverrides: { MANAGE_STAFF: "ALLOW", REFUND: "DENY" }, discountMaxBps: 1000 });
+      other = (await w.as(w.owner, "POST", "/staff", { name: "Other manager", email: "other@shop.test", pin: "7777", role: "MANAGER" })).body;
+    });
+
+    it("can't grant permissions they don't have, however it's phrased", async () => {
+      expect((await w.as(w.manager, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: { MANAGE_SETTINGS: "ALLOW" } })).status).toBe(403);
+      // Their own REFUND is DENY: no ALLOW, and no relaxing an owner's DENY to PIN either.
+      expect((await w.as(w.manager, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: { REFUND: "ALLOW" } })).status).toBe(403);
+      await w.as(w.owner, "PUT", "/roles/CASHIER", { permissions: { REFUND: "DENY" }, discountMaxBps: 1000 });
+      const relax = await w.as(w.manager, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: { REFUND: "PIN" } });
+      expect(relax.status).toBe(403);
+      expect(relax.body.message).toContain("Refund sales");
+      // Dropping an owner-set DENY override is a grant too.
+      await w.as(w.owner, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: { PRICE_OVERRIDE: "DENY" } });
+      expect((await w.as(w.manager, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: {} })).status).toBe(200); // PRICE_OVERRIDE back to PIN: the manager has ALLOW
+      await w.as(w.owner, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: { CONSIGNOR_SETTLE: "DENY" } });
+      expect((await w.as(w.manager, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: {} })).status).toBe(200); // DENY by default anyway
+      await w.as(w.owner, "PUT", "/roles/CASHIER", { permissions: { CONSIGNOR_SETTLE: "ALLOW" }, discountMaxBps: 1000 });
+      await w.as(w.owner, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: { CONSIGNOR_SETTLE: "DENY" } });
+      expect((await w.as(w.manager, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: {} })).status).toBe(403);
+      // Promoting to manager would hand over REFUND and a bigger discount limit.
+      expect((await w.as(w.manager, "PATCH", `/staff/${cashier.id}`, { role: "MANAGER" })).status).toBe(403);
+      expect((await w.as(w.manager, "POST", "/staff", { name: "M", email: "m@shop.test", pin: "8888", role: "MANAGER" })).status).toBe(403);
+      // What they do have, they can give (once the owner undoes the CONSIGNOR_SETTLE experiment above).
+      await w.as(w.owner, "PUT", "/roles/CASHIER", { permissions: {}, discountMaxBps: 1000 });
+      expect((await w.as(w.manager, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: { PRICE_OVERRIDE: "ALLOW", NO_SALE: "ALLOW" } })).status).toBe(200);
+      // A new cashier would be able to refund with a PIN, which this manager can't do at all.
+      const hire = await w.as(w.manager, "POST", "/staff", { name: "C", email: "c@shop.test", pin: "8888", permissionOverrides: { NO_SALE: "ALLOW" } });
+      expect(hire.status).toBe(403);
+      expect(hire.body.message).toContain("Refund sales");
+      expect((await w.as(w.manager, "POST", "/staff", { name: "C", email: "c@shop.test", pin: "8888", permissionOverrides: { NO_SALE: "ALLOW", REFUND: "DENY" } })).status).toBe(201);
+    });
+
+    it("can't set a discount limit above their own", async () => {
+      const res = await w.as(w.manager, "PATCH", `/staff/${cashier.id}`, { discountMaxBps: 5000 });
+      expect(res.status).toBe(403);
+      expect(res.body.message).toContain("10%");
+      expect((await w.as(w.manager, "POST", "/staff", { name: "C", email: "c@shop.test", pin: "8888", discountMaxBps: 1500 })).status).toBe(403);
+      expect((await w.as(w.manager, "PATCH", `/staff/${cashier.id}`, { discountMaxBps: 800 })).status).toBe(200);
+      expect((await w.as(w.manager, "PATCH", `/staff/${cashier.id}`, { discountMaxBps: 1000 })).status).toBe(200);
+      // Lowering a limit the owner set higher is fine.
+      await w.as(w.owner, "PATCH", `/staff/${cashier.id}`, { discountMaxBps: 5000 });
+      expect((await w.as(w.manager, "PATCH", `/staff/${cashier.id}`, { discountMaxBps: 2000 })).status).toBe(200);
+    });
+
+    it("can't change their own role, permissions, or limit", async () => {
+      expect((await w.as(w.manager, "PATCH", `/staff/${manager.id}`, { permissionOverrides: { MANAGE_STAFF: "ALLOW" } })).status).toBe(403);
+      expect((await w.as(w.manager, "PATCH", `/staff/${manager.id}`, { discountMaxBps: 500 })).status).toBe(403);
+      expect((await w.as(w.manager, "PATCH", `/staff/${manager.id}`, { role: "CASHIER" })).status).toBe(403);
+      expect((await w.as(w.manager, "PATCH", `/staff/${manager.id}`, { active: true })).status).toBe(403);
+      expect((await w.as(w.manager, "GET", "/auth/me")).body.permissions.levels.REFUND).toBe("DENY");
+      // Their own name, PIN, and password are theirs to change.
+      expect((await w.as(w.manager, "PATCH", `/staff/${manager.id}`, { name: "Mo", pin: "9876", password: "a password for mo" })).status).toBe(200);
+    });
+
+    it("can reset a cashier's PIN but not another manager's", async () => {
+      expect((await w.as(w.manager, "PATCH", `/staff/${cashier.id}`, { pin: "9876" })).status).toBe(200);
+      const res = await w.as(w.manager, "PATCH", `/staff/${other.id}`, { pin: "9875" });
+      expect(res.status).toBe(403);
+      expect(res.body.message).toContain("Only an owner");
+      expect((await w.as(w.manager, "PATCH", `/staff/${other.id}`, { password: "another password" })).status).toBe(403);
+      expect((await w.as(w.manager, "PATCH", `/staff/${other.id}`, { email: "o2@shop.test" })).status).toBe(403);
+      expect((await w.as(w.manager, "PATCH", `/staff/${other.id}`, { name: "Renamed" })).status).toBe(200);
+    });
+
+    it("owners can do all of it", async () => {
+      expect((await w.as(w.owner, "PATCH", `/staff/${cashier.id}`, { discountMaxBps: 5000 })).status).toBe(200);
+      expect((await w.as(w.owner, "PATCH", `/staff/${manager.id}`, { permissionOverrides: { MANAGE_STAFF: "ALLOW", REFUND: "PIN" } })).status).toBe(200);
+      expect((await w.as(w.owner, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: { REFUND: "PIN" } })).status).toBe(200);
+      expect((await w.as(w.owner, "PATCH", `/staff/${other.id}`, { pin: "9876" })).status).toBe(200);
+      expect((await w.as(w.owner, "PATCH", `/staff/${cashier.id}`, { role: "MANAGER" })).status).toBe(200);
+    });
+
+    it("logs what changed about whom, never the PIN", async () => {
+      await w.as(w.manager, "PATCH", `/staff/${cashier.id}`, { discountMaxBps: 800, pin: "9876", name: "CASHIER" });
+      const log = await w.as(w.manager, "GET", "/audit?action=STAFF_UPDATED");
+      expect(log.body[0]).toMatchObject({
+        staffName: "MANAGER",
+        details: { target: cashier.id, targetName: "CASHIER", changes: { discountMaxBps: { from: null, to: 800 } }, pinChanged: true, passwordChanged: false },
+      });
+      expect(log.body[0].details.changes).not.toHaveProperty("name");
+      expect(JSON.stringify(log.body)).not.toContain("9876");
+      // The owner's earlier change to the manager, with the overrides before and after.
+      const mine = log.body.find((r: any) => r.details.target === manager.id);
+      expect(mine.details.changes).toEqual({ permissionOverrides: { from: {}, to: { MANAGE_STAFF: "ALLOW", REFUND: "DENY" } }, discountMaxBps: { from: null, to: 1000 } });
+    });
   });
 });
 
@@ -166,6 +314,14 @@ describe("activity log", () => {
     await w.as(w.manager, "PATCH", `/catalog/variants/${v.nm}`, { priceCents: 1299 });
     const log = await w.as(w.manager, "GET", "/audit?action=PRICE_CHANGE");
     expect(log.body[0]).toMatchObject({ staffName: "MANAGER", details: { fromCents: 1000, toCents: 1299 } });
+  });
+
+  it("filters by several events at once", async () => {
+    await w.app.inject({ method: "POST", url: "/auth/login", payload: { pin: "9999" } });
+    const log = await w.as(w.manager, "GET", "/audit?action=LOGIN,LOGIN_FAILED");
+    const kinds = new Set(log.body.map((r: any) => r.action));
+    expect(kinds).toEqual(new Set(["LOGIN", "LOGIN_FAILED"]));
+    expect((await w.as(w.manager, "GET", "/audit?action=LOGIN_FAILED")).body.every((r: any) => r.action === "LOGIN_FAILED")).toBe(true);
   });
 
   it("cashiers can't read the log", async () => {

@@ -58,24 +58,48 @@ export interface Approval {
 /**
  * A manager enters their PIN to approve something for the signed-in employee.
  * The approver needs ALLOW for every permission (and a high enough discount
- * limit). The token only works for the employee who asked, once.
+ * limit). The token only works for the employee who asked, once. Every way
+ * this can fail is logged (never the PIN), so a wrong-PIN streak is visible.
  */
 export async function approve(
   db: Db,
-  input: { pin: string; permissions: Permission[]; requesterId: string; discountBps?: number; reason?: string; locationId?: string },
+  input: { pin: string; permissions: Permission[]; requesterId: string; discountBps?: number; reason?: string; locationId?: string; ip?: string },
   attemptKey: string,
 ): Promise<Approval> {
-  checkAttempts(attemptKey);
+  // A discount approval is for a stated amount, so one PIN for 15% can't clear 100%.
+  if (input.permissions.includes("DISCOUNT_LINE") && input.discountBps === undefined) {
+    throw new AppError(400, "DISCOUNT_BPS_REQUIRED", "Say how much is being discounted");
+  }
+  const failed = (reason: string, extra: Prisma.InputJsonObject = {}, approverId?: string) =>
+    audit(db, {
+      action: "APPROVAL_FAILED",
+      staffId: input.requesterId,
+      approverId,
+      locationId: input.locationId,
+      ip: input.ip,
+      details: { reason, permissions: input.permissions, discountBps: input.discountBps ?? null, ...extra },
+    });
+  try {
+    checkAttempts(attemptKey);
+  } catch (e) {
+    await failed("LOCKED_OUT");
+    throw e;
+  }
   const approver = await db.staff.findUnique({ where: { pinLookup: pinLookup(input.pin) } });
   if (!approver || !approver.active) {
     recordFailure(attemptKey);
+    await failed("BAD_PIN");
     throw new AppError(401, "BAD_PIN", "That PIN isn't recognized");
   }
   clearFailures(attemptKey);
   const perms = await permissionsFor(db, approver);
   const missing = input.permissions.filter((p) => perms.levels[p] !== "ALLOW");
-  if (missing.length) throw new AppError(403, "APPROVER_NOT_ALLOWED", `${approver.name} can't approve that`, { missing });
-  if (input.discountBps && input.discountBps > perms.discountMaxBps) {
+  if (missing.length) {
+    await failed("APPROVER_NOT_ALLOWED", { missing }, approver.id);
+    throw new AppError(403, "APPROVER_NOT_ALLOWED", `${approver.name} can't approve that`, { missing });
+  }
+  if (input.discountBps !== undefined && input.discountBps > perms.discountMaxBps) {
+    await failed("APPROVER_LIMIT", { approverMaxBps: perms.discountMaxBps }, approver.id);
     throw new AppError(403, "APPROVER_LIMIT", `${approver.name} can approve discounts up to ${perms.discountMaxBps / 100}%`);
   }
   const token = randomBytes(24).toString("base64url");
@@ -86,7 +110,7 @@ export async function approve(
       approverId: approver.id,
       requesterId: input.requesterId,
       permissions: input.permissions,
-      discountMaxBps: perms.discountMaxBps,
+      discountMaxBps: input.discountBps === undefined ? perms.discountMaxBps : Math.min(perms.discountMaxBps, input.discountBps),
       reason: input.reason,
       expiresAt,
     },

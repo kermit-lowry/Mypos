@@ -22,6 +22,16 @@ describe("dual pricing settings", () => {
     expect((await w.as(w.manager, "PATCH", `/locations/${w.locationId}`, { cardPriceBps: 300 })).status).toBe(403);
     expect((await w.as(w.owner, "PATCH", `/locations/${w.locationId}`, { cardPriceBps: 1500 })).status).toBe(400);
   });
+
+  it("every settings change is logged with what changed", async () => {
+    await w.as(w.owner, "PATCH", `/locations/${w.locationId}`, { cardPriceBps: 350, taxRateBps: 825 });
+    const log = await w.as(w.manager, "GET", "/audit?action=SETTINGS_UPDATED");
+    expect(log.body).toHaveLength(2);
+    // Only what actually changed: the tax rate was already 825.
+    expect(log.body[0]).toMatchObject({ staffName: "OWNER", locationId: w.locationId, details: { changes: { cardPriceBps: { from: 400, to: 350 } } } });
+    expect(log.body[0].details.changes).not.toHaveProperty("taxRateBps");
+    expect(log.body[1].details.changes).toEqual({ cardPriceBps: { from: 0, to: 400 }, receiptFooter: { from: null, to: "Thanks for shopping local!" } });
+  });
 });
 
 describe("checkout", () => {

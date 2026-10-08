@@ -1,6 +1,6 @@
 import { createServer } from "node:net";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { key, prisma, seedCatalog, setup, type World } from "./helpers.js";
+import { key, PINS, prisma, seedCatalog, setup, type World } from "./helpers.js";
 
 let w: World;
 let v: Awaited<ReturnType<typeof seedCatalog>>;
@@ -55,6 +55,8 @@ describe("ESC/POS receipt printer", () => {
     expect(has(bytes, CUT)).toBe(true);
     expect(bytes.toString("latin1")).toContain("Change");
     expect(w.gateway.printed).toHaveLength(0);
+    const log = await w.as(w.manager, "GET", "/audit?action=DRAWER_OPEN");
+    expect(log.body[0]).toMatchObject({ staffName: "CASHIER", approverName: null, locationId: w.locationId, details: { orderId: sale.body.order.id, terminalId, trigger: "cash_sale" } });
   });
 
   it("sends plain ASCII text, never UTF-8, to the printer", async () => {
@@ -91,6 +93,71 @@ describe("ESC/POS receipt printer", () => {
     const sale = await cashSale();
     const res = await w.as(w.cashier, "POST", `/orders/${sale.body.order.id}/receipt/print`, { terminalId });
     expect(res.body.error).toBe("PRINTER_UNREACHABLE");
+  });
+});
+
+describe("drawer via receipt print", () => {
+  const print = (orderId: string, as: string, approval?: string) =>
+    w.app.inject({
+      method: "POST",
+      url: `/orders/${orderId}/receipt/print`,
+      payload: { terminalId, openDrawer: true },
+      headers: { authorization: `Bearer ${as}`, ...(approval ? { "x-approval-token": approval } : {}) },
+    });
+
+  it("a cashier can't pop the drawer by reprinting a card sale", async () => {
+    const printer = await fakePrinter();
+    await w.as(w.manager, "PATCH", `/terminals/${terminalId}`, { receiptPrinterHost: printer.host });
+    const sale = await w.as(w.cashier, "POST", "/orders/checkout", {
+      locationId: w.locationId,
+      lines: [{ variantId: v.nm, quantity: 1 }],
+      tenders: [{ type: "CARD", amountCents: 1083, paymentToken: "tok_ok" }],
+      idempotencyKey: key(),
+    });
+    const res = await print(sale.body.order.id, w.cashier);
+    const bytes = await printer.received();
+    printer.close();
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toMatchObject({ error: "APPROVAL_REQUIRED", details: { permission: "NO_SALE" } });
+    expect(has(bytes, DRAWER_KICK)).toBe(false);
+    expect(bytes).toHaveLength(0);
+  });
+
+  it("someone else's cash sale is a no-sale: needs a manager's PIN and is logged as one", async () => {
+    const printer = await fakePrinter();
+    await w.as(w.manager, "PATCH", `/terminals/${terminalId}`, { receiptPrinterHost: printer.host });
+    const sale = await w.as(w.manager, "POST", "/orders/checkout", {
+      locationId: w.locationId,
+      lines: [{ variantId: v.nm, quantity: 1 }],
+      tenders: [{ type: "CASH", amountCents: 1083, tenderedCents: 2000 }],
+      idempotencyKey: key(),
+    });
+    const orderId = sale.body.order.id as string;
+    const denied = await print(orderId, w.cashier);
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json().error).toBe("APPROVAL_REQUIRED");
+    expect(await printer.received()).toHaveLength(0);
+
+    const grant = await w.as(w.cashier, "POST", "/auth/approve", { pin: PINS.MANAGER, permissions: ["NO_SALE"] });
+    const ok = await print(orderId, w.cashier, grant.body.token);
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toEqual({ printed: true, on: "printer" });
+    const bytes = await printer.received();
+    printer.close();
+    expect(has(bytes, DRAWER_KICK)).toBe(true);
+    const log = await w.as(w.manager, "GET", "/audit?action=NO_SALE");
+    expect(log.body[0]).toMatchObject({ staffName: "CASHIER", approverName: "MANAGER", locationId: w.locationId, details: { orderId, terminalId, trigger: "reprint" } });
+    expect(await w.as(w.manager, "GET", "/audit?action=DRAWER_OPEN")).toMatchObject({ body: [] });
+  });
+
+  it("without a drawer, a denied cashier still gets the permission error, not a printer one", async () => {
+    const sale = await w.as(w.manager, "POST", "/orders/checkout", {
+      locationId: w.locationId,
+      lines: [{ variantId: v.nm, quantity: 1 }],
+      tenders: [{ type: "CASH", amountCents: 1083 }],
+      idempotencyKey: key(),
+    });
+    expect((await print(sale.body.order.id, w.cashier)).json().error).toBe("APPROVAL_REQUIRED");
   });
 });
 
