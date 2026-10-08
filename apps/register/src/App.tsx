@@ -5,7 +5,7 @@ import { useKeepAwake } from "expo-keep-awake";
 import { useEffect, useState } from "react";
 import { BackHandler, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
-import { loadSession, setToken, type Location } from "./api";
+import { ApiError, loadSession, setToken, type Location } from "./api";
 import { BuylistScreen } from "./screens/BuylistScreen";
 import { CustomerDisplayScreen } from "./screens/CustomerDisplayScreen";
 import { DealsScreen } from "./screens/DealsScreen";
@@ -17,10 +17,11 @@ import { SellScreen } from "./screens/SellScreen";
 import { StoreSettingsScreen } from "./screens/StoreSettingsScreen";
 import { useLayout } from "./layout";
 import type { EffectivePermissions, Permission } from "@mypos/shared";
-import { ApprovalProvider } from "./approval";
+import { ApprovalProvider, NotPermitted } from "./approval";
+import { CartProvider, useCart, useClearCart } from "./cart";
 import { ActivityScreen } from "./screens/ActivityScreen";
 import { StaffScreen } from "./screens/StaffScreen";
-import { SessionContext, type Session, type Staff } from "./session";
+import { SessionContext, useCan, useSession, type Session, type Staff } from "./session";
 import { colors, ui } from "./theme";
 
 const TABS = ["Sell", "Buylist", "Events", "Labels", "Deals", "Activity", "Staff", "Store", "Loyalty", "Display"] as const;
@@ -38,6 +39,7 @@ function RegisterApp() {
   const [ready, setReady] = useState(false);
   const [session, setSession] = useState<Omit<Session, "signOut"> | null>(null);
   const [tab, setTab] = useState<Tab>("Sell");
+  const [signOutNotice, setSignOutNotice] = useState<string | null>(null);
   const { narrow } = useLayout();
   // Registers and customer displays shouldn't dim or lock mid-sale.
   useKeepAwake();
@@ -57,6 +59,8 @@ function RegisterApp() {
     // Staff sign in each shift; we only remember the server URL.
     loadSession().then(() => setToken(null).then(() => setReady(true)));
   }, []);
+
+  useEffect(() => setSignOutNotice(null), [tab]);
 
   const signOut = () => {
     setToken(null);
@@ -85,60 +89,88 @@ function RegisterApp() {
     return !p || session.permissions.levels[p] !== "DENY";
   });
 
-  // Customer display takes over the whole screen.
-  if (tab === "Display") {
-    return (
-      <SafeAreaProvider>
-        <StatusBar hidden />
-        <SessionContext.Provider value={value}>
-          <ApprovalProvider>
-            <CustomerDisplayScreen onExit={() => setTab("Sell")} />
-          </ApprovalProvider>
-        </SessionContext.Provider>
-      </SafeAreaProvider>
-    );
-  }
-
   return (
     <SafeAreaProvider>
-      <StatusBar style="light" />
+      {/* Customer display takes over the whole screen. */}
+      <StatusBar style="light" hidden={tab === "Display"} />
       <SessionContext.Provider value={value}>
         <ApprovalProvider>
-        <SafeAreaView style={ui.screen}>
-          <View style={[ui.row, { paddingHorizontal: narrow ? 8 : 16, paddingTop: 8, gap: 8 }]}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ gap: 8 }}>
-              {visible.map((t) => (
-                <Pressable
-                  key={t}
-                  onPress={() => setTab(t)}
-                  style={{ paddingVertical: 10, paddingHorizontal: 18, borderRadius: 8, backgroundColor: tab === t ? colors.accent : colors.panel }}
-                >
-                  <Text style={[ui.text, { fontWeight: "600" }]}>{t}</Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-            {!narrow && (
-              <Text style={ui.muted}>
-                {session.staff.name} · {session.location.name}
-              </Text>
+          {/* The cart lives above the tabs, so changing tabs doesn't lose a sale. */}
+          <CartProvider>
+            {tab === "Display" ? (
+              <CustomerDisplayScreen onExit={() => setTab("Sell")} />
+            ) : (
+              <SafeAreaView style={ui.screen}>
+                <View style={[ui.row, { paddingHorizontal: narrow ? 8 : 16, paddingTop: 8, gap: 8 }]}>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ gap: 8 }}>
+                    {visible.map((t) => (
+                      <Pressable
+                        key={t}
+                        onPress={() => setTab(t)}
+                        style={{ paddingVertical: 10, paddingHorizontal: 18, borderRadius: 8, backgroundColor: tab === t ? colors.accent : colors.panel }}
+                      >
+                        <Text style={[ui.text, { fontWeight: "600" }]}>{t}</Text>
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                  {!narrow && (
+                    <Text style={ui.muted}>
+                      {session.staff.name} · {session.location.name}
+                    </Text>
+                  )}
+                  <SignOutButton onNotice={setSignOutNotice} />
+                </View>
+                {signOutNotice && <Text style={[ui.error, { paddingHorizontal: narrow ? 8 : 16, paddingTop: 4 }]}>{signOutNotice}</Text>}
+                {tab === "Sell" && <SellScreen />}
+                {tab === "Buylist" && <BuylistScreen />}
+                {tab === "Events" && <EventsScreen />}
+                {tab === "Labels" && <LabelsScreen />}
+                {tab === "Deals" && <DealsScreen />}
+                {tab === "Activity" && <ActivityScreen />}
+                {tab === "Staff" && <StaffScreen />}
+                {tab === "Loyalty" && <LoyaltySettingsScreen />}
+                {tab === "Store" && <StoreSettingsScreen onSaved={(location) => setSession({ ...session, location })} />}
+              </SafeAreaView>
             )}
-            <Pressable onPress={signOut} style={{ padding: 10 }}>
-              <Text style={{ color: colors.link }}>Sign out</Text>
-            </Pressable>
-          </View>
-          {tab === "Sell" && <SellScreen />}
-          {tab === "Buylist" && <BuylistScreen />}
-          {tab === "Events" && <EventsScreen />}
-          {tab === "Labels" && <LabelsScreen />}
-          {tab === "Deals" && <DealsScreen />}
-          {tab === "Activity" && <ActivityScreen />}
-          {tab === "Staff" && <StaffScreen />}
-          {tab === "Loyalty" && <LoyaltySettingsScreen />}
-          {tab === "Store" && <StoreSettingsScreen onSaved={(location) => setSession({ ...session, location })} />}
-        </SafeAreaView>
+          </CartProvider>
         </ApprovalProvider>
       </SessionContext.Provider>
     </SafeAreaProvider>
+  );
+}
+
+/**
+ * Signing out with items in the cart deletes that cart, so it's checked and
+ * logged like the Clear button (a manager's PIN if that's the employee's
+ * level). Cancelling the PIN keeps you signed in.
+ */
+function SignOutButton({ onNotice }: { onNotice: (m: string | null) => void }) {
+  const { signOut } = useSession();
+  const { lines } = useCart();
+  const can = useCan();
+  const clearCart = useClearCart();
+  const [busy, setBusy] = useState(false);
+
+  async function press() {
+    onNotice(null);
+    if (lines.length === 0) return signOut();
+    if (can("CART_CLEAR") === "DENY") return onNotice("Clear or complete the cart first. Deleting a cart needs a manager.");
+    setBusy(true);
+    let cleared = false;
+    try {
+      cleared = await clearCart();
+    } catch (e) {
+      onNotice(e instanceof NotPermitted || e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+    if (cleared) signOut();
+  }
+
+  return (
+    <Pressable onPress={press} disabled={busy} style={{ padding: 10 }}>
+      <Text style={{ color: colors.link }}>Sign out</Text>
+    </Pressable>
   );
 }
 

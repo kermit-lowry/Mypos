@@ -46,6 +46,9 @@ interface Line {
   cashOfferCents?: number;
   creditOfferCents?: number;
   suggestion?: Suggestion;
+  /** The store's own figures for a catalog item, before anything typed at the counter. */
+  catalogSuggestion?: Suggestion;
+  catalogResaleCents?: number | null;
 }
 
 const cents = (t: string) => {
@@ -76,13 +79,15 @@ export function BuylistScreen() {
     let live = true;
     const t = setTimeout(async () => {
       try {
-        const res = await api<{ suggestion: Suggestion }[]>("POST", "/buylist/suggest", {
+        const res = await api<{ suggestion: Suggestion; catalogSuggestion?: Suggestion | null; catalogResaleCents?: number | null }[]>("POST", "/buylist/suggest", {
           locationId: location.id,
           lines: lines.map((l) => ({ variantId: l.variantId, description: l.variantId ? undefined : l.title, quantity: l.quantity, marketCents: l.resaleCents })),
         });
         if (!live) return;
         lastSig.current = sig;
-        setLines((prev) => prev.map((l, i) => ({ ...l, suggestion: res[i]?.suggestion })));
+        setLines((prev) =>
+          prev.map((l, i) => ({ ...l, suggestion: res[i]?.suggestion, catalogSuggestion: res[i]?.catalogSuggestion ?? undefined, catalogResaleCents: res[i]?.catalogResaleCents ?? null })),
+        );
       } catch (e) {
         if (live) setMessage(e instanceof ApiError ? e.message : String(e));
       }
@@ -108,7 +113,13 @@ export function BuylistScreen() {
   const cashTotal = lines.reduce((a, l) => a + offer(l).cash * l.quantity, 0);
   const creditTotal = lines.reduce((a, l) => a + offer(l).credit * l.quantity, 0);
   const priced = lines.length > 0 && lines.every((l) => l.suggestion);
-  const overSuggested = lines.some((l) => l.suggestion && (offer(l).cash > l.suggestion.cashCents || offer(l).credit > l.suggestion.creditCents));
+  // Going above the store's own figures needs BUYLIST_OVERRIDE: an offer over the
+  // catalog's suggestion, or a catalog item's "Resells $" raised above the catalog's.
+  const overSuggested = lines.some((l) => {
+    const s = l.catalogSuggestion ?? l.suggestion;
+    if (s && (offer(l).cash > s.cashCents || offer(l).credit > s.creditCents)) return true;
+    return l.resaleCents !== undefined && l.resaleCents > (l.catalogResaleCents ?? Infinity);
+  });
 
   async function payout(kind: "CASH" | "STORE_CREDIT") {
     setBusy(true);
@@ -166,7 +177,7 @@ export function BuylistScreen() {
             renderItem={({ item: l }) => <TicketLine line={l} offer={offer(l)} onChange={(patch) => update(l.key, patch)} onRemove={() => remove(l.key)} />}
           />
           {message && <Text style={ui.text}>{message}</Text>}
-          {overSuggested && <Text style={[ui.muted, { color: colors.warn }]}>An offer is above the suggestion{can("BUYLIST_OVERRIDE") === "PIN" ? ": needs a manager's PIN" : ""}.</Text>}
+          {overSuggested && <Text style={[ui.muted, { color: colors.warn }]}>An offer is above the catalog's suggestion{can("BUYLIST_OVERRIDE") === "PIN" ? ": needs a manager's PIN" : ""}.</Text>}
           {!customer && lines.length > 0 && <Text style={ui.muted}>Attach the customer for store credit (and to keep a record of who sold what).</Text>}
           <View style={[ui.row, { gap: 8 }]}>
             {can("BUYLIST_PAYOUT") !== "DENY" && (
@@ -193,7 +204,11 @@ export function BuylistScreen() {
 /** One item on the ticket: suggested offer with its reasons, editable amounts. */
 function TicketLine({ line, offer, onChange, onRemove }: { line: Line; offer: { cash: number; credit: number }; onChange: (p: Partial<Line>) => void; onRemove: () => void }) {
   const [showWhy, setShowWhy] = useState(false);
+  const can = useCan();
   const s = line.suggestion;
+  // Raising a catalog item's resale figure is an override (the server checks it too).
+  const overrideLevel = line.variantId ? can("BUYLIST_OVERRIDE") : "ALLOW";
+  const catalogCents = line.catalogResaleCents;
   const edited = (field: "cash" | "credit") => (field === "cash" ? line.cashOfferCents !== undefined : line.creditOfferCents !== undefined);
   return (
     <View style={{ paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border, gap: 6 }}>
@@ -217,13 +232,17 @@ function TicketLine({ line, offer, onChange, onRemove }: { line: Line; offer: { 
               <OfferField label="Cash" value={offer.cash} suggested={s.cashCents} edited={edited("cash")} onChange={(v) => onChange({ cashOfferCents: v })} />
               <OfferField label="Credit" value={offer.credit} suggested={s.creditCents} edited={edited("credit")} onChange={(v) => onChange({ creditOfferCents: v })} />
               <View style={{ gap: 4, minWidth: 90 }}>
-                <Text style={ui.muted}>Resells $</Text>
+                <Text style={ui.muted}>Resells ${overrideLevel === "PIN" ? " · PIN" : ""}</Text>
                 <TextInput
-                  style={[ui.input, { paddingVertical: 6 }]}
+                  style={[ui.input, { paddingVertical: 6, opacity: overrideLevel === "DENY" ? 0.5 : 1 }]}
                   keyboardType="decimal-pad"
+                  editable={overrideLevel !== "DENY"}
                   defaultValue={(s.resaleCents / 100).toFixed(2)}
                   onEndEditing={(e) => onChange({ resaleCents: cents(e.nativeEvent.text), cashOfferCents: undefined, creditOfferCents: undefined })}
                 />
+                {catalogCents != null && line.resaleCents !== undefined && line.resaleCents !== catalogCents && (
+                  <Text style={ui.muted}>Catalog says {formatCents(catalogCents)}</Text>
+                )}
               </View>
               <View style={{ gap: 4, width: 64 }}>
                 <Text style={ui.muted}>Qty</Text>
