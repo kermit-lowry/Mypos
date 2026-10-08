@@ -102,6 +102,19 @@ gaps; the fixes are in this branch:
   online-orders report (time to ready, time to done, by channel), and the
   activity log reads "Set aside 2 of 3 items on order #12".
 
+**Employee tasks**
+- Back office → Employees → Tasks: define tasks that repeat every day,
+  weekly on chosen days, or monthly on a day of the month (or one time), due
+  by a time, for one store or all, assigned to anyone / a role / a person,
+  with checklist steps and an optional required note. Today's board per
+  store (complete, skip, reopen), history with CSV, completion report.
+- Register: after the PIN, a briefing lists today's and overdue tasks; the
+  Tasks tab and header badge count them; steps tick off, Done takes a note,
+  Skip needs a reason and a manager's PIN for cashiers; managers see
+  everyone's tasks and can reopen. The website shows a reminder banner after
+  login. Every create / change / complete / skip / reopen is in the activity
+  log. 43 permissions now (Create and assign employee tasks; Skip a task).
+
 ## First things to try on real hardware
 1. PAX terminal + Handpoint keys in `.env`, run a $1 sale and a refund.
 2. ESC/POS receipt printer with the drawer plugged in: cash sale pops the
