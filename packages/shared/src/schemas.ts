@@ -219,6 +219,8 @@ export const PreorderInput = z.object({
   locationId: id,
   tenders: z.array(TenderInput).min(1),
   idempotencyKey: z.string().min(8),
+  /** The register taking the deposit, so cash goes into its open drawer session. */
+  terminalId: id.optional(),
 });
 export type PreorderInput = z.infer<typeof PreorderInput>;
 

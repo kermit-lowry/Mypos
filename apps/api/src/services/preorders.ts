@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { currentSession, drawerClosed } from "./drawer.js";
 import type { PreorderInput, PreorderProductInput, TenderInput } from "@mypos/shared";
 import { badRequest, conflict, notFound, paymentFailed } from "../errors.js";
 import { config } from "../config.js";
@@ -35,6 +36,11 @@ export async function placePreorder(ctx: Ctx, input: PreorderInput) {
     if (!DEPOSIT_TENDERS.has(t.type)) throw badRequest("TENDER_NOT_ALLOWED", `${t.type} not accepted for deposits`);
     if (t.type === "CASH" && !actor) throw badRequest("TENDER_NOT_ALLOWED", "Cash deposits are register-only");
   }
+  // Cash deposits go into the register's open drawer, like a sale.
+  const location = await prisma.location.findUnique({ where: { id: input.locationId } });
+  if (!location) throw notFound("Location");
+  const drawer = actor ? await currentSession(prisma, location.id, input.terminalId) : null;
+  if (!drawer && location.requireDrawerSession && input.tenders.some((t) => t.type === "CASH")) throw drawerClosed();
 
   const preorder = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "PreorderProduct" WHERE id = ${input.preorderProductId} FOR UPDATE`;
@@ -119,6 +125,7 @@ export async function placePreorder(ctx: Ctx, input: PreorderInput) {
             status: "APPROVED",
             gateway: card ? (card.gateway ?? gateway.name) : null,
             terminalId: charge?.terminal?.id,
+            drawerSessionId: drawer?.id,
             gatewayRef: card?.gatewayRef,
             cardBrand: card?.cardBrand,
             cardLast4: card?.cardLast4,
