@@ -1,8 +1,9 @@
 # Where things stand
 
 Branch: `claude/pos-foundation`. Everything below is pushed. Run it with the
-Quick start in the README; the dev database has an owner (web password
-`owner-password-123`, PIN 1111), a manager (2222), a cashier (3333), two
+Quick start in the README; the dev database has register employees by PIN
+(owner 1111, manager 2222, cashier 3333), website users owner@mypos.local /
+`owner-password-123` and manager@mypos.local / `manager-password-123`, two
 locations, sample sales, purchase orders, transfers, vendors and brands.
 
 ## What was built in this round
@@ -64,8 +65,7 @@ gaps; the fixes are in this branch:
   cart line exists and uses the price-override permission; the trade-in
   "resells for" figure can't be raised past the catalog without the
   override PIN.
-- Owners can set website passwords from the Employees screen; everyone can
-  change their own.
+- Website passwords now belong to website users (see below), not employees.
 
 **Shifts, daily close-out and the time clock**
 - Start shift (float counted by denomination), paid in / out / safe drops
@@ -114,6 +114,25 @@ gaps; the fixes are in this branch:
   everyone's tasks and can reopen. The website shows a reminder banner after
   login. Every create / change / complete / skip / reopen is in the activity
   log. 43 permissions now (Create and assign employee tasks; Skip a task).
+
+**Website users and register employees are separate**
+- Register employees: PIN (optional email for email + PIN), role, register
+  permissions with manager-PIN levels, discount limit. They clock in, get
+  tasks, sell, open drawers, and can never sign in to the website.
+- Website users: email and password, owner or manager, website permissions
+  that are only allowed / not allowed. They can't sign in at a register,
+  clock in, take tasks, open a drawer, ring up a sale, pay out a trade-in or
+  take preorder money. The same person can have both accounts.
+- Settings → Website users: add, change role, reset a password, deactivate
+  (ends the session at once), and set each website permission on top of the
+  role default. Nobody changes their own access; a manager can't touch owners
+  or reset another manager's sign-in; the last owner stays.
+- An employee who tries the website gets "That's an employee account…";
+  existing owner and manager logins were copied into website users by the
+  migration, and employees no longer have passwords.
+- Every permission is marked register, website or both; the old "Sign in to
+  the back-office website" permission is gone and "Website users and their
+  permissions" is new. The activity log tags actions done on the website.
 
 ## First things to try on real hardware
 1. PAX terminal + Handpoint keys in `.env`, run a $1 sale and a refund.
