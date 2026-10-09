@@ -1,13 +1,18 @@
-/** Demo data: one store, three staff (PIN 1234), and a few TCG + sneaker products. */
+/** Demo data: one store, three register employees (PINs 1111/2222/3333), two website users, and a few TCG + sneaker products. */
 import { prisma } from "./db.js";
 import { brandFor } from "./services/brands.js";
 import { seedCategoriesAndDeals } from "./seedDeals.js";
 import { hashPin } from "./services/permissions.js";
+import bcrypt from "bcryptjs";
 
 const location = await prisma.location.create({ data: { name: "Main Street", taxRateBps: 825 } });
-// PINs must be unique: they identify the employee at the register.
+// Register employees. PINs must be unique: they identify the employee at the register. No passwords: the website is for users.
 for (const [name, role, pin] of [["Owner", "OWNER", "1111"], ["Manager", "MANAGER", "2222"], ["Cashier", "CASHIER", "3333"]] as const) {
-  await prisma.staff.create({ data: { name, email: `${role.toLowerCase()}@mypos.local`, role, ...(await hashPin(prisma, pin)) } });
+  await prisma.staff.create({ data: { kind: "EMPLOYEE", name, email: `${role.toLowerCase()}@mypos.local`, role, ...(await hashPin(prisma, pin)) } });
+}
+// Back-office website users: the owner and manager again, as separate accounts with the same email.
+for (const [name, role, password] of [["Owner", "OWNER", "owner-password-123"], ["Manager", "MANAGER", "manager-password-123"]] as const) {
+  await prisma.staff.create({ data: { kind: "USER", name, email: `${role.toLowerCase()}@mypos.local`, role, passwordHash: await bcrypt.hash(password, 10) } });
 }
 
 const products = [
@@ -95,7 +100,7 @@ for (const p of allProducts) {
 await seedCategoriesAndDeals();
 
 // Employee tasks: what the sign-in screen shows (seeded once; a rerun of the seed starts from an empty database).
-const [owner, cashier] = await Promise.all([prisma.staff.findFirstOrThrow({ where: { role: "OWNER" } }), prisma.staff.findFirstOrThrow({ where: { role: "CASHIER" } })]);
+const [owner, cashier] = await Promise.all([prisma.staff.findFirstOrThrow({ where: { kind: "EMPLOYEE", role: "OWNER" } }), prisma.staff.findFirstOrThrow({ where: { kind: "EMPLOYEE", role: "CASHIER" } })]);
 const startsOn = new Date("2026-10-01T00:00:00.000Z");
 for (const t of [
   { title: "Opening checklist", recurrence: "DAILY" as const, priority: "HIGH" as const, dueTime: "10:30", checklist: ["Count the float", "Turn on the customer display", "Check online orders", "Wipe the glass case"] },
@@ -107,5 +112,5 @@ for (const t of [
   }
 }
 
-console.log(`Seeded location ${location.id}. PINs: owner 1111, manager 2222, cashier 3333`);
+console.log(`Seeded location ${location.id}. Register PINs: owner 1111, manager 2222, cashier 3333. Website: owner@mypos.local / owner-password-123, manager@mypos.local / manager-password-123`);
 await prisma.$disconnect();

@@ -24,7 +24,7 @@ const lines = () => [
 const open = (tenders: object[], extra: object = {}, as = w.cashier) =>
   w.as(as, "POST", "/layaways", { locationId: w.locationId, customerId: cust, lines: lines(), tenders, idempotencyKey: key(), ...extra });
 const pay = (id: string, tenders: object[], extra: object = {}) => w.as(w.cashier, "POST", `/layaways/${id}/payments`, { tenders, idempotencyKey: key(), ...extra });
-const staffId = async (name: string) => (await prisma.staff.findUniqueOrThrow({ where: { email: `${name.toLowerCase()}@shop.test` } })).id;
+const staffId = async (name: string) => (await prisma.staff.findUniqueOrThrow({ where: { kind_email: { kind: "EMPLOYEE", email: `${name.toLowerCase()}@shop.test` } } })).id;
 /** A manager's PIN approval for the cashier. */
 const approve = async (permissions: string[]) => (await w.as(w.cashier, "POST", "/auth/approve", { pin: PINS.MANAGER, permissions })).body.token as string;
 const withToken = async (as: string, token: string, method: "GET" | "POST", url: string, body?: unknown) => {

@@ -1,4 +1,4 @@
-import type { StaffRole } from "@prisma/client";
+import type { StaffKind, StaffRole } from "@prisma/client";
 import type { EffectivePermissions, Permission } from "@mypos/shared";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { ZodType, ZodTypeDef } from "zod";
@@ -16,18 +16,28 @@ export function parse<T>(schema: ZodType<T, ZodTypeDef, unknown>, data: unknown)
 /** Where a session was opened: the back-office website, or a register (PIN). */
 export type SessionVia = "web" | "register";
 
+/** A session token: a register employee (via "register") or a website user (via "web"). */
+export interface SessionPayload {
+  sub: string;
+  role: StaffRole;
+  via?: SessionVia;
+  kind: StaffKind;
+}
+
 declare module "@fastify/jwt" {
   interface FastifyJWT {
-    payload: { sub: string; role: StaffRole; via?: SessionVia };
-    user: { sub: string; role: StaffRole; via?: SessionVia };
+    payload: SessionPayload;
+    user: SessionPayload;
   }
 }
 
 declare module "fastify" {
   interface FastifyRequest {
-    /** The signed-in employee's current permissions (loaded fresh each request). */
+    /** The signed-in account's current permissions (loaded fresh each request). */
     perms?: EffectivePermissions;
     staffRole?: StaffRole;
+    /** EMPLOYEE (register) or USER (website), from the row, not the token. */
+    staffKind?: StaffKind;
     /** Manager who approved this request with their PIN, if any. */
     approverId?: string;
   }
@@ -41,9 +51,11 @@ export const approvalTokenOf = (req: FastifyRequest) => {
 };
 
 /**
- * preHandler: a signed-in, active employee. Permissions and role are read
- * from the database on every request, so deactivating someone or changing
- * their permissions takes effect immediately, not when their session expires.
+ * preHandler: a signed-in, active account. Permissions, role and kind are
+ * read from the database on every request, so deactivating someone or
+ * changing their permissions takes effect immediately, not when their
+ * session expires. A website session must belong to a website user and a
+ * register session to an employee: the two never cross.
  */
 export function requireStaff() {
   return async (req: FastifyRequest, _reply: FastifyReply) => {
@@ -54,11 +66,28 @@ export function requireStaff() {
     }
     const staff = await prisma.staff.findUnique({ where: { id: req.user.sub } });
     if (!staff || !staff.active) throw new AppError(401, "UNAUTHENTICATED", "This account is no longer active");
+    const via: SessionVia = req.user.via ?? "register";
+    if (via === "web" && staff.kind !== "USER") throw new AppError(401, "UNAUTHENTICATED", "Employees sign in at the register, not the website");
+    if (via === "register" && staff.kind !== "EMPLOYEE") throw new AppError(401, "UNAUTHENTICATED", "Website users sign in on the website, not at the register");
     req.staffRole = staff.role;
+    req.staffKind = staff.kind;
     req.perms = await permissionsFor(prisma, staff);
-    // A website session keeps needing back-office access, not only at sign-in.
-    // 401 so the site drops the token; register sessions aren't gated this way.
-    if (req.user.via === "web" && req.perms.levels.BACK_OFFICE_LOGIN === "DENY") throw new AppError(401, "UNAUTHENTICATED", "Back-office access was removed");
+  };
+}
+
+export const notAnEmployee = () => new AppError(403, "NOT_AN_EMPLOYEE", "Only register employees can do that; website users can't");
+
+/**
+ * preHandler: a signed-in register employee (website users get 403
+ * NOT_AN_EMPLOYEE), optionally also allowed (or approved) to do `permission`.
+ * For clocking in, drawers, and other things only someone in the store does.
+ */
+export function requireEmployee(permission?: Permission) {
+  const staff = requireStaff();
+  return async (req: FastifyRequest, reply: FastifyReply) => {
+    await staff(req, reply);
+    if (req.staffKind !== "EMPLOYEE") throw notAnEmployee();
+    if (permission) await authorize(req, permission);
   };
 }
 
@@ -90,6 +119,6 @@ export function requirePermission(permission: Permission) {
 export const requireRole = (_min: "CASHIER") => requireStaff();
 
 export function actorOf(req: FastifyRequest): Actor | undefined {
-  const u = req.user as { sub: string; role: StaffRole } | undefined;
+  const u = req.user as SessionPayload | undefined;
   return u ? { id: u.sub, role: req.staffRole ?? u.role } : undefined;
 }

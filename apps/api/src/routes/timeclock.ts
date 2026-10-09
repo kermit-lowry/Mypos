@@ -1,9 +1,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { AppError, badRequest } from "../errors.js";
-import { parse, requirePermission, requireStaff } from "../http.js";
+import { parse, requireEmployee, requirePermission, requireStaff } from "../http.js";
 import type { Ctx } from "../services/context.js";
-import { audit, checkAttempts, clearFailures, pinLookup, recordFailure } from "../services/permissions.js";
+import { audit, checkAttempts, clearFailures, employeeByPin, recordFailure } from "../services/permissions.js";
 import { toCsv } from "../services/reports.js";
 import * as T from "../services/timeclock.js";
 
@@ -11,6 +11,8 @@ import * as T from "../services/timeclock.js";
 export function timeClockRoutes(app: FastifyInstance, base: Ctx) {
   const { prisma } = base;
   const staff = { preHandler: requireStaff() };
+  /** Website users don't work shifts: 403 NOT_AN_EMPLOYEE. */
+  const employee = { preHandler: requireEmployee() };
   const manage = { preHandler: requirePermission("MANAGE_TIMESHEETS") };
   const reports = { preHandler: requirePermission("VIEW_REPORTS") };
   const ip = (req: FastifyRequest) => req.ip;
@@ -36,7 +38,7 @@ export function timeClockRoutes(app: FastifyInstance, base: Ctx) {
       await failed("LOCKED_OUT");
       throw e;
     }
-    const employee = await prisma.staff.findUnique({ where: { pinLookup: pinLookup(pin) } });
+    const employee = await employeeByPin(prisma, pin);
     if (!employee || !employee.active) {
       recordFailure(key);
       await failed("BAD_PIN");
@@ -49,13 +51,13 @@ export function timeClockRoutes(app: FastifyInstance, base: Ctx) {
 
   // ── Signed-in employee ────────────────────────────────────────
 
-  app.post("/time/clock-in", staff, async (req, reply) => {
+  app.post("/time/clock-in", employee, async (req, reply) => {
     const { locationId } = parse(z.object({ locationId: z.string().min(1) }), req.body);
-    const entry = await T.clockIn(prisma, { staffId: req.user.sub, locationId, source: req.user.via === "web" ? "web" : "register", ip: ip(req) });
+    const entry = await T.clockIn(prisma, { staffId: req.user.sub, locationId, source: "register", ip: ip(req) });
     return reply.code(201).send({ entry, minutes: entry.minutes });
   });
 
-  app.post("/time/clock-out", staff, async (req) => {
+  app.post("/time/clock-out", employee, async (req) => {
     const entry = await T.clockOut(prisma, { staffId: req.user.sub, ip: ip(req) });
     return { entry, minutes: entry.minutes };
   });

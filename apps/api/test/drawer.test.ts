@@ -22,7 +22,7 @@ beforeEach(async () => {
 });
 afterAll(() => prisma.$disconnect());
 
-const staffId = async (name: string) => (await prisma.staff.findUniqueOrThrow({ where: { email: `${name.toLowerCase()}@shop.test` } })).id;
+const staffId = async (name: string) => (await prisma.staff.findUniqueOrThrow({ where: { kind_email: { kind: "EMPLOYEE", email: `${name.toLowerCase()}@shop.test` } } })).id;
 /** A manager's PIN approval for the cashier. */
 const approve = async (permissions: string[]) => (await w.as(w.cashier, "POST", "/auth/approve", { pin: PINS.MANAGER, permissions })).body.token as string;
 const withToken = async (as: string, token: string, method: "GET" | "POST", url: string, body?: unknown) => {

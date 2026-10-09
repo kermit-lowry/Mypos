@@ -385,7 +385,7 @@ describe("permissions", () => {
   it("cashiers fulfill by default; with FULFILL_ORDERS denied they can look but not act", async () => {
     const id = (await webCheckout()).json().orderId as string;
     expect((await act(id, "acknowledge", undefined, w.cashier)).status).toBe(200);
-    const cashier = await prisma.staff.findUniqueOrThrow({ where: { email: "cashier@shop.test" } });
+    const cashier = await prisma.staff.findUniqueOrThrow({ where: { kind_email: { kind: "EMPLOYEE", email: "cashier@shop.test" } } });
     expect((await w.as(w.owner, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: { FULFILL_ORDERS: "DENY" } })).status).toBe(200);
     const denied = await act(id, "ready", { force: true }, w.cashier);
     expect(denied.status).toBe(403);

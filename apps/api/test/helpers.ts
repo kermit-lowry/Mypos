@@ -7,6 +7,11 @@ import { pinLookup, resetAttemptsForTests } from "../src/services/permissions.js
 
 /** Each test employee's PIN. */
 export const PINS = { CASHIER: "1111", MANAGER: "2222", OWNER: "3333" } as const;
+/** Each test website user's email and password. */
+export const USERS = {
+  OWNER: { email: "owner@shop.test", password: "owner-password-123" },
+  MANAGER: { email: "manager@shop.test", password: "manager-password-123" },
+} as const;
 
 export const prisma = new PrismaClient();
 
@@ -20,9 +25,13 @@ export interface World {
   app: FastifyInstance;
   gateway: MockGateway;
   locationId: string;
+  /** Register tokens for the three employees. */
   cashier: string;
   manager: string;
   owner: string;
+  /** Website tokens for the two users. */
+  webOwner: string;
+  webManager: string;
   /** Inject with a staff token. */
   as(token: string, method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", url: string, body?: unknown): Promise<{ status: number; body: any }>;
 }
@@ -41,11 +50,18 @@ export async function setup(): Promise<World> {
     const res = await app.inject({ method: "POST", url: "/auth/login", payload: { pin } });
     tokens[role] = res.json().token;
   }
+  // Website users: the owner and the manager again, as separate accounts with the same email.
+  for (const role of ["OWNER", "MANAGER"] as const) {
+    const { email, password } = USERS[role];
+    await prisma.staff.create({ data: { kind: "USER", name: `Web ${role}`, email, role, passwordHash: await bcrypt.hash(password, 4) } });
+    const res = await app.inject({ method: "POST", url: "/auth/web-login", payload: { email, password } });
+    tokens[`web${role}`] = res.json().token;
+  }
   const as: World["as"] = async (token, method, url, body) => {
     const res = await app.inject({ method, url, payload: body as object, headers: { authorization: `Bearer ${token}` } });
     return { status: res.statusCode, body: res.body ? res.json() : undefined };
   };
-  return { app, gateway, locationId: location.id, cashier: tokens.CASHIER!, manager: tokens.MANAGER!, owner: tokens.OWNER!, as };
+  return { app, gateway, locationId: location.id, cashier: tokens.CASHIER!, manager: tokens.MANAGER!, owner: tokens.OWNER!, webOwner: tokens.webOWNER!, webManager: tokens.webMANAGER!, as };
 }
 
 let keySeq = 0;

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { AppError, badRequest, notFound } from "../errors.js";
-import { actorOf, authorize, parse, requirePermission, requireStaff } from "../http.js";
+import { actorOf, authorize, parse, requireEmployee, requirePermission, requireStaff } from "../http.js";
 import type { Ctx } from "../services/context.js";
 import { drawerReportHtml } from "../services/documents.js";
 import {
@@ -129,8 +129,8 @@ export function shiftRoutes(app: FastifyInstance, base: Ctx) {
     return { session: await present(session), expected, settings };
   });
 
-  /** Start a shift: count the float in. 409 DRAWER_ALREADY_OPEN if this register already has one. */
-  app.post("/drawer/open", { preHandler: requirePermission("DRAWER_OPEN_CLOSE") }, async (req, reply) => {
+  /** Start a shift: count the float in. 409 DRAWER_ALREADY_OPEN if this register already has one. Employees only (403 NOT_AN_EMPLOYEE). */
+  app.post("/drawer/open", { preHandler: requireEmployee("DRAWER_OPEN_CLOSE") }, async (req, reply) => {
     const body = parse(OpenBody, req.body);
     const session = await openDrawer(ctx(req), body);
     return reply.code(201).send(await present(session));
@@ -189,7 +189,7 @@ export function shiftRoutes(app: FastifyInstance, base: Ctx) {
    * needs CASH_VARIANCE_OVERRIDE (a manager's PIN for cashiers), recorded as
    * `approvedBy`. Returns the closed session with `expected` and its Z `report`.
    */
-  app.post("/drawer/:id/close", { preHandler: requirePermission("DRAWER_OPEN_CLOSE") }, async (req) => {
+  app.post("/drawer/:id/close", { preHandler: requireEmployee("DRAWER_OPEN_CLOSE") }, async (req) => {
     const body = parse(CloseBody, req.body);
     const { session, report } = await closeDrawer(ctx(req), id(req), body, async () => {
       await authorize(req, "CASH_VARIANCE_OVERRIDE", `drawer ${id(req)} close variance`);

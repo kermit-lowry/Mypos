@@ -237,7 +237,8 @@ export async function materialize(db: Db, input: { locationId: string; from?: Da
 }
 
 /** Who a task can be assigned to: the active employees, by name (for people who manage tasks but not staff). */
-export const assignees = (db: Db) => db.staff.findMany({ where: { active: true }, select: { id: true, name: true, role: true }, orderBy: { name: "asc" } });
+/** Active register employees (website users can't be assigned tasks). */
+export const assignees = (db: Db) => db.staff.findMany({ where: { kind: "EMPLOYEE", active: true }, select: { id: true, name: true, role: true }, orderBy: { name: "asc" } });
 
 /** Every active location, so every-store tasks and location-less reads cover them all. */
 const activeLocations = (db: Db) => db.location.findMany({ where: { active: true }, orderBy: { createdAt: "asc" } });
@@ -372,6 +373,7 @@ async function validateTask(db: Db, t: Required<TaskInput>, before?: { assigneeT
     if (!t.assigneeId) throw badRequest("ASSIGNEE", "Pick the employee this task is for");
     const who = await db.staff.findUnique({ where: { id: t.assigneeId } });
     const unchanged = before?.assigneeType === "EMPLOYEE" && before.assigneeId === t.assigneeId;
+    if (who && who.kind !== "EMPLOYEE") throw badRequest("ASSIGNEE", "That's a website user; tasks are for register employees");
     if (!who || (!who.active && !unchanged)) throw badRequest("ASSIGNEE", "That employee isn't active");
     assigneeId = who.id;
   }

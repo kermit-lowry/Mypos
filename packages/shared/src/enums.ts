@@ -60,6 +60,10 @@ export type BuylistPayout = (typeof BuylistPayouts)[number];
 export const StaffRoles = ["OWNER", "MANAGER", "CASHIER"] as const;
 export type StaffRole = (typeof StaffRoles)[number];
 
+/** EMPLOYEE: signs in at the register with a PIN. USER: signs in to the back-office website with a password. */
+export const StaffKinds = ["EMPLOYEE", "USER"] as const;
+export type StaffKind = (typeof StaffKinds)[number];
+
 const APPAREL_SIZES = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "2XL", "XXXL", "3XL", "4XL"];
 
 /** Shoe sizes numerically (4, 4.5 ... 13), youth sizes ("5Y") with numbers, then XS–XXL, then anything else. */

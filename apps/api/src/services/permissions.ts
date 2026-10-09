@@ -6,7 +6,7 @@ import { config } from "../config.js";
 import type { Db } from "../db.js";
 import { AppError, conflict } from "../errors.js";
 
-/** PINs are looked up by HMAC so a PIN alone identifies an employee, without storing it. */
+/** PINs are looked up by HMAC so a PIN alone identifies an employee, without storing it. Unique across the whole table. */
 export const pinLookup = (pin: string) => createHmac("sha256", config.pinPepper).update(`pin:${pin}`).digest("hex");
 
 export async function hashPin(db: Db, pin: string, exceptStaffId?: string): Promise<{ pinHash: string; pinLookup: string }> {
@@ -22,12 +22,17 @@ export async function rolePolicy(db: Db, role: Staff["role"]): Promise<RolePolic
   return row ? { permissions: row.permissions as RolePolicy["permissions"], discountMaxBps: row.discountMaxBps } : null;
 }
 
+/** What this employee or website user can do right now (their kind decides which permissions apply at all). */
 export async function permissionsFor(db: Db, staff: Staff): Promise<EffectivePermissions> {
   return effectivePermissions(staff.role, await rolePolicy(db, staff.role), {
     overrides: staff.permissionOverrides as Partial<Record<Permission, PermissionLevel>>,
     discountMaxBps: staff.discountMaxBps,
+    kind: staff.kind,
   });
 }
+
+/** The employee a PIN belongs to, or null. Website users have no PIN, and could never match even if a row had one. */
+export const employeeByPin = (db: Db, pin: string) => db.staff.findUnique({ where: { pinLookup: pinLookup(pin), kind: "EMPLOYEE" } });
 
 // ── Brute-force protection for PINs ──────────────────────────────
 
@@ -85,7 +90,7 @@ export async function approve(
     await failed("LOCKED_OUT");
     throw e;
   }
-  const approver = await db.staff.findUnique({ where: { pinLookup: pinLookup(input.pin) } });
+  const approver = await employeeByPin(db, input.pin);
   if (!approver || !approver.active) {
     recordFailure(attemptKey);
     await failed("BAD_PIN");

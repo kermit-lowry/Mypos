@@ -132,9 +132,11 @@ export function AdminApp() {
       await loadSession();
       if (getToken()) {
         try {
-          const me = await api<{ staff: Staff; permissions: EffectivePermissions }>("GET", "/auth/me");
+          const me = await api<{ staff: Staff; permissions: EffectivePermissions; via?: "web" | "register" }>("GET", "/auth/me");
           const locations = await api<Location[]>("GET", "/locations");
-          if (locations[0] && me.permissions.levels.BACK_OFFICE_LOGIN !== "DENY") setSession({ ...me, locations, location: locations[0] });
+          // Only a website user's session runs the back office (employees sign in at the register).
+          if (locations[0] && me.via === "web") setSession({ staff: me.staff, permissions: me.permissions, locations, location: locations[0] });
+          else await setToken(null);
         } catch {
           await setToken(null);
         }

@@ -86,7 +86,7 @@ describe("manager PIN approvals", () => {
     const grant = await approve(PINS.OWNER, ["NO_SALE"], {}, w.cashier);
     const t = await prisma.terminal.create({ data: { locationId: w.locationId, name: "T", gatewayRef: "1", receiptPrinterHost: "127.0.0.1:1" } });
     const other = await prisma.staff.create({ data: { name: "Other", email: "o@shop.test", role: "CASHIER", pinHash: "x" } });
-    const otherToken = w.app.jwt.sign({ sub: other.id, role: "CASHIER" });
+    const otherToken = w.app.jwt.sign({ sub: other.id, role: "CASHIER", kind: "EMPLOYEE" });
     const res = await withApproval(grant.body.token, "POST", `/terminals/${t.id}/drawer`, {}, otherToken);
     expect(res.json().error).toBe("APPROVAL_REQUIRED");
   });
@@ -161,6 +161,10 @@ describe("role and employee settings", () => {
   it("PINs are unique, and the last owner can't be removed", async () => {
     const dup = await w.as(w.owner, "POST", "/staff", { name: "New", email: "new@shop.test", pin: PINS.MANAGER });
     expect(dup.body.error).toBe("PIN_TAKEN");
+    // An email is optional for an employee (PIN-only sign-in); two employees can't share one.
+    expect((await w.as(w.owner, "POST", "/staff", { name: "No email", pin: "5556" })).status).toBe(201);
+    expect((await w.as(w.owner, "POST", "/staff", { name: "No email 2", pin: "5557" })).status).toBe(201);
+    expect((await w.as(w.owner, "POST", "/staff", { name: "Dup", email: "cashier@shop.test", pin: "5558" })).body.error).toBe("EMAIL_TAKEN");
     const owner = await prisma.staff.findFirstOrThrow({ where: { role: "OWNER" } });
     expect((await w.as(w.owner, "PATCH", `/staff/${owner.id}`, { role: "MANAGER" })).body.error).toBe("LAST_OWNER");
     const listed = await w.as(w.owner, "GET", "/staff");
@@ -174,7 +178,11 @@ describe("role and employee settings", () => {
     expect(JSON.stringify(res.body.details)).toContain("VIEW_REPORTS");
     const cashier = await prisma.staff.findFirstOrThrow({ where: { role: "CASHIER" } });
     expect((await w.as(w.owner, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: { MANAGE_STAFF: "PIN" } })).status).toBe(400);
-    expect((await w.as(w.owner, "POST", "/staff", { name: "New", email: "new@shop.test", pin: "5555", permissionOverrides: { BACK_OFFICE_LOGIN: "PIN" } })).status).toBe(400);
+    expect((await w.as(w.owner, "POST", "/staff", { name: "New", email: "new@shop.test", pin: "5555", permissionOverrides: { MANAGE_DEALS: "PIN" } })).status).toBe(400);
+    // Website-only permissions mean nothing to an employee.
+    const webOnly = await w.as(w.owner, "POST", "/staff", { name: "New", email: "new@shop.test", pin: "5555", permissionOverrides: { MANAGE_USERS: "ALLOW" } });
+    expect(webOnly.status).toBe(400);
+    expect(JSON.stringify(webOnly.body.details)).toContain("MANAGE_USERS");
     expect((await w.as(w.owner, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: { REFUND: "PIN", VIEW_REPORTS: "ALLOW" } })).status).toBe(200);
   });
 
@@ -245,8 +253,10 @@ describe("role and employee settings", () => {
       expect((await w.as(w.manager, "PATCH", `/staff/${manager.id}`, { role: "CASHIER" })).status).toBe(403);
       expect((await w.as(w.manager, "PATCH", `/staff/${manager.id}`, { active: true })).status).toBe(403);
       expect((await w.as(w.manager, "GET", "/auth/me")).body.permissions.levels.REFUND).toBe("DENY");
-      // Their own name, PIN, and password are theirs to change.
-      expect((await w.as(w.manager, "PATCH", `/staff/${manager.id}`, { name: "Mo", pin: "9876", password: "a password for mo" })).status).toBe(200);
+      // Their own name and PIN are theirs to change. There is no password: employees don't sign in to the website.
+      expect((await w.as(w.manager, "PATCH", `/staff/${manager.id}`, { name: "Mo", pin: "9876" })).status).toBe(200);
+      await w.as(w.manager, "PATCH", `/staff/${manager.id}`, { password: "a password for mo" });
+      expect((await prisma.staff.findUniqueOrThrow({ where: { id: manager.id } })).passwordHash).toBeNull();
     });
 
     it("can reset a cashier's PIN but not another manager's", async () => {
@@ -254,7 +264,6 @@ describe("role and employee settings", () => {
       const res = await w.as(w.manager, "PATCH", `/staff/${other.id}`, { pin: "9875" });
       expect(res.status).toBe(403);
       expect(res.body.message).toContain("Only an owner");
-      expect((await w.as(w.manager, "PATCH", `/staff/${other.id}`, { password: "another password" })).status).toBe(403);
       expect((await w.as(w.manager, "PATCH", `/staff/${other.id}`, { email: "o2@shop.test" })).status).toBe(403);
       expect((await w.as(w.manager, "PATCH", `/staff/${other.id}`, { name: "Renamed" })).status).toBe(200);
     });
@@ -272,7 +281,7 @@ describe("role and employee settings", () => {
       const log = await w.as(w.manager, "GET", "/audit?action=STAFF_UPDATED");
       expect(log.body[0]).toMatchObject({
         staffName: "MANAGER",
-        details: { target: cashier.id, targetName: "CASHIER", changes: { discountMaxBps: { from: null, to: 800 } }, pinChanged: true, passwordChanged: false },
+        details: { target: cashier.id, targetName: "CASHIER", changes: { discountMaxBps: { from: null, to: 800 } }, pinChanged: true },
       });
       expect(log.body[0].details.changes).not.toHaveProperty("name");
       expect(JSON.stringify(log.body)).not.toContain("9876");

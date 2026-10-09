@@ -157,7 +157,7 @@ export async function createEntry(
   db: Db,
   input: { staffId: string; locationId: string; clockIn: Date; clockOut?: Date; breakMinutes?: number; note?: string; editedById: string },
 ) {
-  const staff = await db.staff.findUnique({ where: { id: input.staffId } });
+  const staff = await db.staff.findUnique({ where: { id: input.staffId, kind: "EMPLOYEE" } });
   if (!staff) throw notFound("Employee");
   if (!(await db.location.findUnique({ where: { id: input.locationId } }))) throw notFound("Location");
   const data = { clockIn: input.clockIn, clockOut: input.clockOut ?? null, breakMinutes: input.breakMinutes ?? 0 };

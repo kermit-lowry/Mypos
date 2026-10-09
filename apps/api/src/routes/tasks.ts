@@ -1,7 +1,7 @@
 import { StaffRole, TaskAssignee, TaskPriority, TaskRecurrence, TaskStatus } from "@prisma/client";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { authorize, parse, requirePermission, requireStaff } from "../http.js";
+import { authorize, parse, requireEmployee, requirePermission, requireStaff } from "../http.js";
 import type { Ctx } from "../services/context.js";
 import { permissionDenied } from "../services/permissions.js";
 import * as T from "../services/tasks.js";
@@ -87,9 +87,10 @@ export function taskRoutes(app: FastifyInstance, base: Ctx) {
 
   /**
    * What to show at sign-in: { today, overdue, upcoming, counts: { open, overdue, doneToday } }.
-   * Visible = for anyone, for their role, or for them.
+   * Visible = for anyone, for their role, or for them. Employees only: tasks
+   * aren't for website users (403 NOT_AN_EMPLOYEE).
    */
-  app.get("/tasks/mine", staff, async (req) => {
+  app.get("/tasks/mine", { preHandler: requireEmployee() }, async (req) => {
     const { locationId } = parse(z.object({ locationId: z.string().min(1) }), req.query);
     return T.mine(prisma, { staffId: req.user.sub, role: req.staffRole ?? req.user.role, locationId });
   });

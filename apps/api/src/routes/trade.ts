@@ -14,7 +14,7 @@ import {
 } from "@mypos/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { actorOf, approvalTokenOf, authorize, parse, requirePermission, requireRole } from "../http.js";
+import { actorOf, approvalTokenOf, authorize, parse, requireEmployee, requirePermission, requireRole } from "../http.js";
 import { forbidden } from "../errors.js";
 import type { CardSource } from "../pricing/cardSources.js";
 import { withMarket } from "../pricing/trends.js";
@@ -30,6 +30,8 @@ import * as preorders from "../services/preorders.js";
 export function tradeRoutes(app: FastifyInstance, base: Ctx, cardSources: CardSource[] = []) {
   const { prisma } = base;
   const staff = { preHandler: requireRole("CASHIER") };
+  /** Paying out for trade-ins and taking preorder money happen at a register, by an employee. */
+  const register = { preHandler: requireEmployee() };
   const ctx = (req: Parameters<typeof actorOf>[0]): Ctx => ({ ...base, actor: actorOf(req), perms: req.perms, approvalToken: approvalTokenOf(req) });
   const id = (req: { params: unknown }) => (req.params as { id: string }).id;
 
@@ -55,7 +57,7 @@ export function tradeRoutes(app: FastifyInstance, base: Ctx, cardSources: CardSo
   });
   // Paying out cash/credit is a manager action at most stores.
   // Paying cash and issuing store credit are separate permissions.
-  app.post("/buylist/:id/accept", staff, async (req) => {
+  app.post("/buylist/:id/accept", register, async (req) => {
     const input = parse(BuylistAcceptInput, req.body);
     await authorize(req, input.payout === "CASH" ? "BUYLIST_PAYOUT" : "BUYLIST_CREDIT", `buylist ${input.payout}`);
     const ticket = await acceptBuylist(ctx(req), id(req), input);
@@ -166,13 +168,13 @@ export function tradeRoutes(app: FastifyInstance, base: Ctx, cardSources: CardSo
   // ── Preorders ──────────────────────────────────────────────
   app.post("/preorder-products", { preHandler: requirePermission("MANAGE_CATALOG") }, async (req) => preorders.createPreorderProduct(ctx(req), parse(PreorderProductInput, req.body)));
   app.get("/preorder-products/:id", staff, async (req) => preorders.preorderAvailability(ctx(req), id(req)));
-  app.post("/preorders", staff, async (req, reply) => {
+  app.post("/preorders", register, async (req, reply) => {
     const input = parse(PreorderInput, req.body);
     // Same gate as paying for a sale with store credit.
     if (input.tenders.some((t) => t.type === "STORE_CREDIT")) await authorize(req, "TENDER_STORE_CREDIT", "preorder deposit");
     return reply.code(201).send(await preorders.placePreorder(ctx(req), input));
   });
-  app.post("/preorders/:id/fulfill", staff, async (req) =>
+  app.post("/preorders/:id/fulfill", register, async (req) =>
     preorders.fulfillPreorder(
       ctx(req),
       id(req),

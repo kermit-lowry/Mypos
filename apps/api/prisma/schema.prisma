@@ -75,23 +75,32 @@ model Location {
   taskOccurrences TaskOccurrence[]
 }
 
+/// A register employee (kind EMPLOYEE: PIN, clocks in, runs sales) or a
+/// back-office website user (kind USER: email + password). The same person
+/// may be both, as two rows that share an email.
 model Staff {
   id        String    @id @default(cuid())
+  /// EMPLOYEE signs in at the register with a PIN; USER signs in to the
+  /// website with a password. Never both.
+  kind      StaffKind @default(EMPLOYEE)
   name      String
-  email     String    @unique
-  /// bcrypt hash of the register PIN.
-  pinHash   String
-  /// bcrypt hash of the back-office website password (register uses the PIN).
+  /// Required for users (it's their sign-in); optional for employees (email + PIN sign-in).
+  email     String?
+  /// bcrypt hash of the register PIN. Employees only.
+  pinHash   String?
+  /// bcrypt hash of the website password. Users only.
   passwordHash String?
   /// HMAC of the PIN (server secret), so a PIN alone finds its employee for
   /// PIN sign-in and manager approvals. Makes PINs unique per store.
   pinLookup String?   @unique
   role      StaffRole @default(CASHIER)
   active    Boolean   @default(true)
-  /// Per-employee permission overrides: { REFUND: "ALLOW", ... }.
+  /// Per-account permission overrides: { REFUND: "ALLOW", ... }.
   permissionOverrides Json @default("{}")
   /// Per-employee discount limit (bps of a line) without approval; null = role's.
   discountMaxBps Int?
+  /// Last successful sign-in (website users).
+  lastLoginAt DateTime?
   createdAt DateTime  @default(now())
 
   orders    Order[]
@@ -105,12 +114,20 @@ model Staff {
   tasksCreated    Task[]           @relation("TaskCreatedBy")
   tasksAssigned   Task[]           @relation("TaskAssignee")
   taskCompletions TaskOccurrence[]
+
+  @@unique([kind, email])
+  @@index([kind, active])
 }
 
 enum StaffRole {
   OWNER
   MANAGER
   CASHIER
+}
+
+enum StaffKind {
+  EMPLOYEE
+  USER
 }
 
 /// A card-present payment device registered with the merchant gateway.

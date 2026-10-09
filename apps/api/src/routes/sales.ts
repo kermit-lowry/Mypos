@@ -3,7 +3,7 @@ import { OrderStatus, type Prisma } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { conflict, notFound } from "../errors.js";
-import { actorOf, approvalTokenOf, parse, requirePermission, requireRole } from "../http.js";
+import { actorOf, approvalTokenOf, parse, requireEmployee, requirePermission, requireRole } from "../http.js";
 import { checkout } from "../services/checkout.js";
 import type { Ctx } from "../services/context.js";
 import { audit } from "../services/permissions.js";
@@ -14,8 +14,10 @@ import { creditBalance, postCredit } from "../services/storeCredit.js";
 export function salesRoutes(app: FastifyInstance, base: Ctx) {
   const { prisma } = base;
   const staff = { preHandler: requireRole("CASHIER") };
+  /** Ringing up a sale happens at a register, by an employee (website users get 403 NOT_AN_EMPLOYEE). */
+  const register = { preHandler: requireEmployee() };
 
-  app.post("/orders/checkout", staff, async (req, reply) => {
+  app.post("/orders/checkout", register, async (req, reply) => {
     const input = parse(CheckoutInput, req.body);
     const result = await checkout({ ...base, actor: actorOf(req), perms: req.perms, approvalToken: approvalTokenOf(req) }, input);
     if (result.replayed && result.order.status === "VOID") {

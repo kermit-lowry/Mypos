@@ -107,13 +107,12 @@ describe("the signed-in employee", () => {
     expect((await w.as(w.manager, "GET", "/time/clocked-in")).body).toEqual([]);
   });
 
-  it("records source \"web\" for a back-office session", async () => {
-    const manager = await prisma.staff.findUniqueOrThrow({ where: { id: ids.manager } });
-    await w.as(w.owner, "PATCH", `/staff/${manager.id}`, { password: "a back office password" });
-    const login = await w.app.inject({ method: "POST", url: "/auth/web-login", payload: { email: manager.email, password: "a back office password" } });
-    const web = login.json().token as string;
-    const res = await w.as(web, "POST", "/time/clock-in", { locationId: w.locationId });
-    expect(res.body.entry.source).toBe("web");
+  it("website users don't clock in: they aren't employees", async () => {
+    const res = await w.as(w.webManager, "POST", "/time/clock-in", { locationId: w.locationId });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("NOT_AN_EMPLOYEE");
+    expect((await w.as(w.webManager, "POST", "/time/clock-out")).body.error).toBe("NOT_AN_EMPLOYEE");
+    expect(await prisma.timeEntry.count()).toBe(0);
   });
 
   it("needs a session for everything but the PIN clock", async () => {
