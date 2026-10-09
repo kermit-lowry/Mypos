@@ -1,4 +1,4 @@
-import { effectivePermissions, PermissionKeys, PERMISSIONS } from "@mypos/shared";
+import { effectivePermissions, PermissionKeys, PERMISSIONS, WEB_PERMISSIONS } from "@mypos/shared";
 import type { Staff } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -9,14 +9,19 @@ import type { Ctx } from "../services/context.js";
 import { audit, changes, permissionsFor, rolePolicy } from "../services/permissions.js";
 import { NOTHING, overridesFor, RANK, type OverrideMap } from "./overrides.js";
 
-/** A website user as the API shows them: never the password hash. */
-const publicUser = (u: Staff) => ({
+/**
+ * A website user as the API shows them: never the password hash. `permissions`
+ * is what they can do on the website (their role's defaults with their own
+ * overrides), so the users page can show it without reading role policies.
+ */
+const presentUser = (u: Staff, levels: Record<string, string>) => ({
   id: u.id,
   name: u.name,
   email: u.email,
   role: u.role,
   active: u.active,
   permissionOverrides: u.permissionOverrides,
+  permissions: Object.fromEntries(WEB_PERMISSIONS.map((p) => [p, levels[p]])),
   lastLoginAt: u.lastLoginAt,
   createdAt: u.createdAt,
 });
@@ -34,6 +39,7 @@ const UserOverrides = overridesFor("USER");
 export function userRoutes(app: FastifyInstance, base: Ctx) {
   const { prisma } = base;
   const manageUsers = { preHandler: requirePermission("MANAGE_USERS") };
+  const publicUser = async (u: Staff) => presentUser(u, (await permissionsFor(prisma, u)).levels);
 
   interface UserInput {
     role?: "OWNER" | "MANAGER";
@@ -82,7 +88,7 @@ export function userRoutes(app: FastifyInstance, base: Ctx) {
     if (taken && taken.id !== exceptId) throw conflict("EMAIL_TAKEN", "Another website user already uses that email");
   }
 
-  app.get("/users", manageUsers, async () => (await prisma.staff.findMany({ where: { kind: "USER" }, orderBy: [{ active: "desc" }, { name: "asc" }] })).map(publicUser));
+  app.get("/users", manageUsers, async () => Promise.all((await prisma.staff.findMany({ where: { kind: "USER" }, orderBy: [{ active: "desc" }, { name: "asc" }] })).map(publicUser)));
 
   app.post("/users", manageUsers, async (req, reply) => {
     const input = parse(
@@ -104,7 +110,7 @@ export function userRoutes(app: FastifyInstance, base: Ctx) {
       staffId: req.user.sub,
       details: { target: user.id, targetName: user.name, role: user.role, permissionOverrides: rest.permissionOverrides },
     });
-    return reply.code(201).send(publicUser(user));
+    return reply.code(201).send(await publicUser(user));
   });
 
   app.patch("/users/:id", manageUsers, async (req) => {
@@ -133,6 +139,6 @@ export function userRoutes(app: FastifyInstance, base: Ctx) {
       staffId: req.user.sub,
       details: { target: id, targetName: existing.name, changes: changes(existing as unknown as Record<string, unknown>, rest), passwordChanged: !!password },
     });
-    return publicUser(user);
+    return await publicUser(user);
   });
 }

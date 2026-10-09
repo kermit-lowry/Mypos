@@ -246,6 +246,20 @@ describe("managing website users", () => {
     expect((await w.as(w.webOwner, "PATCH", `/staff/${cashier.id}`, { permissionOverrides: { MAKE_COFFEE: "ALLOW" } })).status).toBe(400);
   });
 
+  it("shows what each user can do on the website: role defaults plus their own overrides", async () => {
+    const webManager = await user(USERS.MANAGER.email);
+    await w.as(w.webOwner, "PATCH", `/users/${webManager.id}`, { permissionOverrides: { VIEW_REPORTS: "DENY", MANAGE_USERS: "ALLOW" } });
+    const list = await w.as(w.webOwner, "GET", "/users");
+    const m = list.body.find((u: any) => u.id === webManager.id);
+    expect(m.permissions).toMatchObject({ VIEW_REPORTS: "DENY", MANAGE_USERS: "ALLOW", MANAGE_CATALOG: "ALLOW", MANAGE_SETTINGS: "DENY" });
+    // Only website permissions, never a PIN level, never a password hash.
+    expect(Object.keys(m.permissions)).not.toContain("DISCOUNT_LINE");
+    expect(Object.values(m.permissions).every((l) => l === "ALLOW" || l === "DENY")).toBe(true);
+    expect(JSON.stringify(list.body)).not.toMatch(/passwordHash|pinHash/);
+    const o = list.body.find((u: any) => u.role === "OWNER");
+    expect(Object.values(o.permissions).every((l) => l === "ALLOW")).toBe(true);
+  });
+
   it("only takes website permissions, and only as allowed / not allowed", async () => {
     const registerOnly = await w.as(w.webOwner, "POST", "/users", { name: "X", email: "x@shop.test", password: "a long enough password", permissionOverrides: { NO_SALE: "ALLOW" } });
     expect(registerOnly.status).toBe(400);
