@@ -218,6 +218,14 @@ describe("reports", () => {
     await seedEntry(ids.manager, new Date(DAY.getTime() - 10 * 86_400_000), 8, 12); // outside the range
 
     expect((await w.as(w.cashier, "GET", `/reports/timesheets?${around(DAY)}`)).status).toBe(403);
+    // Hours aren't sales: a website manager who edits timesheets but can't see sales reports still reads them,
+    // while sales by shift stays behind the reports permission.
+    const webManager = await prisma.staff.findFirstOrThrow({ where: { kind: "USER", role: "MANAGER" } });
+    await w.as(w.webOwner, "PATCH", `/users/${webManager.id}`, { permissionOverrides: { VIEW_REPORTS: "DENY" } });
+    expect((await w.as(w.webManager, "GET", `/reports/timesheets?${around(DAY)}`)).status).toBe(200);
+    expect((await w.as(w.webManager, "GET", `/reports/employee-shifts?${around(DAY)}`)).status).toBe(403);
+    await w.as(w.webOwner, "PATCH", `/users/${webManager.id}`, { permissionOverrides: { VIEW_REPORTS: "DENY", MANAGE_TIMESHEETS: "DENY" } });
+    expect((await w.as(w.webManager, "GET", `/reports/timesheets?${around(DAY)}`)).status).toBe(403);
 
     const summary = await w.as(w.manager, "GET", `/reports/timesheets?${around(DAY)}`);
     expect(summary.status).toBe(200);

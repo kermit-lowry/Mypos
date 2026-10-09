@@ -25,9 +25,10 @@ import { Shifts } from "./pages/Shifts";
 import { TasksPage } from "./pages/Tasks";
 import { Timesheets } from "./pages/Timesheets";
 import { Transfers } from "./pages/Transfers";
+import { UsersPage } from "./pages/Users";
 import { TaskReminder } from "./TaskReminder";
 
-type PageId = "dashboard" | "orders" | "shifts" | "layaways" | "reports" | "products" | "brands" | "purchase-orders" | "vendors" | "purchase-report" | "transfers" | "transfer-report" | "customers" | "employees" | "timesheets" | "tasks" | "deals" | "loyalty" | "store" | "activity";
+type PageId = "dashboard" | "orders" | "shifts" | "layaways" | "reports" | "products" | "brands" | "purchase-orders" | "vendors" | "purchase-report" | "transfers" | "transfer-report" | "customers" | "employees" | "timesheets" | "tasks" | "deals" | "loyalty" | "store" | "users" | "activity";
 
 interface NavItem {
   id: PageId;
@@ -57,7 +58,7 @@ const NAV: NavGroup[] = [
   { items: [{ id: "customers", label: "Customers", perms: ["MANAGE_CUSTOMERS", "ADJUST_BALANCES"] }] },
   { label: "Employees", items: [{ id: "employees", label: "Employees", perms: ["MANAGE_STAFF"] }, { id: "timesheets", label: "Timesheets", perms: ["MANAGE_TIMESHEETS", "VIEW_REPORTS"] }, { id: "tasks", label: "Tasks", perms: ["MANAGE_TASKS"] }] },
   { label: "Marketing", items: [{ id: "deals", label: "Deals", perms: ["MANAGE_DEALS"] }, { id: "loyalty", label: "Loyalty", perms: ["MANAGE_LOYALTY"] }] },
-  { label: "Settings", items: [{ id: "store", label: "Store", perms: ["MANAGE_SETTINGS"] }, { id: "activity", label: "Activity log", perms: ["VIEW_REPORTS"] }] },
+  { label: "Settings", items: [{ id: "store", label: "Store", perms: ["MANAGE_SETTINGS"] }, { id: "users", label: "Website users", perms: ["MANAGE_USERS"] }, { id: "activity", label: "Activity log", perms: ["VIEW_REPORTS"] }] },
 ];
 
 const PAGES: Record<PageId, (ctx: { onLocationSaved: (l: Location) => void }) => ReactElement> = {
@@ -80,6 +81,7 @@ const PAGES: Record<PageId, (ctx: { onLocationSaved: (l: Location) => void }) =>
   deals: () => <DealsScreen />,
   loyalty: () => <LoyaltySettingsScreen />,
   store: ({ onLocationSaved }) => <StoreSettingsScreen onSaved={onLocationSaved} />,
+  users: () => <UsersPage />,
   activity: () => <ActivityScreen />,
 };
 
@@ -104,15 +106,18 @@ function savePage(p: PageId) {
   }
 }
 
+/** The signed-in account; on the website it is always a website user (kind USER). */
+type WebStaff = Staff & { kind?: "USER" | "EMPLOYEE" };
+
 interface Signed {
-  staff: Staff;
+  staff: WebStaff;
   permissions: EffectivePermissions;
   locations: Location[];
   location: Location;
 }
 
 /**
- * The back-office website: sign in with email + password, then run the
+ * The back-office website: a website user (not a register employee) signs in with email + password, then run the
  * store from any browser, phone included. Grouped navigation in a left
  * sidebar; on phones it slides in from the ☰ button.
  */
@@ -122,7 +127,7 @@ export function AdminApp() {
   const [page, setPage] = useState<PageId>(() => savedPage() ?? "dashboard");
   const [menu, setMenu] = useState(false);
   const [changingPassword, setChangingPassword] = useState(false);
-  /** The sign-in task reminder, once dismissed, stays hidden until the next sign-in. */
+  /** The sign-in task summary, once dismissed, stays hidden until the next sign-in. */
   const [reminderDismissed, setReminderDismissed] = useState(false);
   const { narrow, dialog } = useLayout();
 
@@ -132,7 +137,7 @@ export function AdminApp() {
       await loadSession();
       if (getToken()) {
         try {
-          const me = await api<{ staff: Staff; permissions: EffectivePermissions; via?: "web" | "register" }>("GET", "/auth/me");
+          const me = await api<{ staff: WebStaff; permissions: EffectivePermissions; via?: "web" | "register" }>("GET", "/auth/me");
           const locations = await api<Location[]>("GET", "/locations");
           // Only a website user's session runs the back office (employees sign in at the register).
           if (locations[0] && me.via === "web") setSession({ staff: me.staff, permissions: me.permissions, locations, location: locations[0] });
@@ -310,7 +315,7 @@ function WebLogin({ onSignedIn }: { onSignedIn: (s: Signed) => void }) {
     setError(null);
     try {
       await setApiUrl(url);
-      const r = await api<{ token: string; staff: Staff; permissions: EffectivePermissions }>("POST", "/auth/web-login", { email: email.trim(), password });
+      const r = await api<{ token: string; staff: WebStaff; permissions: EffectivePermissions }>("POST", "/auth/web-login", { email: email.trim(), password });
       await setToken(r.token);
       const locations = await api<Location[]>("GET", "/locations");
       if (!locations[0]) throw new Error("No locations set up yet");
@@ -327,7 +332,7 @@ function WebLogin({ onSignedIn }: { onSignedIn: (s: Signed) => void }) {
       <ScrollView style={ui.screen} contentContainerStyle={{ flexGrow: 1, alignItems: "center", justifyContent: "center", padding: 12 }}>
         <View style={[ui.panel, { width: dialog(420), gap: 12 }]}>
           <Text style={ui.h1}>MyPOS Back Office</Text>
-          <Text style={ui.muted}>Sign in with your email and website password. Registers use PINs; this needs a password an owner set for you.</Text>
+          <Text style={ui.muted}>Website users sign in with their email and password. Register employees use their PIN at the register.</Text>
           <TextInput style={ui.input} value={email} onChangeText={setEmail} placeholder="Email" placeholderTextColor={colors.muted} autoCapitalize="none" keyboardType="email-address" autoComplete="email" />
           <TextInput style={ui.input} value={password} onChangeText={setPassword} placeholder="Password" placeholderTextColor={colors.muted} secureTextEntry onSubmitEditing={signIn} autoComplete="password" />
           {error && <Text style={ui.error}>{error}</Text>}

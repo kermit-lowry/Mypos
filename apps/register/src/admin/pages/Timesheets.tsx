@@ -192,7 +192,8 @@ export function Timesheets() {
       </Card>
 
       <Card title="Timesheets" right={manage && view === "hours" ? <Button title="+ Add entry" kind="good" style={{ minHeight: 36, paddingVertical: 6 }} onPress={() => (setEditing(null), setAdding(true))} /> : undefined}>
-        <Chips options={[["hours", "Hours"], ["shifts", "Sales by shift"]]} value={view} onChange={(v) => setView(v as never)} />
+        {/* Sales by shift is a sales figure; someone who only edits timesheets sees hours. */}
+        {can("VIEW_REPORTS") === "ALLOW" && <Chips options={[["hours", "Hours"], ["shifts", "Sales by shift"]]} value={view} onChange={(v) => setView(v as never)} />}
         <DateRangePicker value={range} onChange={setRange} />
         <View style={[ui.row, { gap: 8, flexWrap: "wrap", alignItems: "flex-end" }]}>
           <Chips options={[["here", location.name], ["all", "All locations"]]} value={scope} onChange={(s) => setScope(s as never)} />

@@ -11,6 +11,8 @@ interface Event {
   id: string;
   action: string;
   staffName: string | null;
+  /** Who did it: a register employee or a back-office website user. */
+  staffKind?: "EMPLOYEE" | "USER" | null;
   approverName: string | null;
   status: number | null;
   ip: string | null;
@@ -39,6 +41,7 @@ const FILTERS: [string, string, Record<string, string>][] = [
   ["login", "Sign-ins", { action: "LOGIN" }],
   ["failed", "Failed sign-ins", { action: "LOGIN_FAILED" }],
   ["staff", "Employee changes", { action: "STAFF_CREATED,STAFF_UPDATED,ROLE_UPDATED" }],
+  ["users", "Website users", { action: "USER_CREATED,USER_UPDATED" }],
   ["tasks", "Tasks", { action: "TASK_CREATED,TASK_UPDATED,TASK_DELETED,TASK_COMPLETED,TASK_SKIPPED,TASK_REOPENED" }],
   ["catalog", "Catalog changes", { action: "PRODUCT_CREATED,PRODUCT_UPDATED,VARIANT_UPDATED,BRAND_CREATED,BRAND_RENAMED,BRAND_MERGED,PRODUCT_VENDOR_SET,PRODUCT_VENDOR_REMOVED" }],
   [
@@ -69,6 +72,7 @@ const REFUSAL: Record<string, string> = {
   ALREADY_CLOCKED_IN: "already clocked in",
   NOT_CLOCKED_IN: "not clocked in",
 };
+const USER_ROLE: Record<string, string> = { OWNER: "Owner", MANAGER: "Manager", CASHIER: "Cashier" };
 const TASK_REPEATS: Record<string, string> = { ONCE: "one time", DAILY: "every day", WEEKLY: "weekly", MONTHLY: "monthly" };
 const TASK_ROLE: Record<string, string> = { OWNER: "owners", MANAGER: "managers", CASHIER: "cashiers" };
 /** Who a task is for, from the assignee object the task events carry: "anyone", "managers", "Sam". */
@@ -207,6 +211,19 @@ function changes(c: unknown): string[] {
   });
 }
 
+/** A website user's changes, field by field: "role Manager → Owner", "deactivated", "permissions changed". */
+function userChanges(c: unknown): string[] {
+  if (!isObject(c)) return [];
+  return Object.entries(c).map(([k, v]) => {
+    const [from, to] = isObject(v) && ("from" in v || "to" in v) ? [v.from, v.to] : [undefined, v];
+    if (k === "active") return to === false ? "deactivated" : "reactivated";
+    if (k === "role") return `role ${USER_ROLE[String(from)] ?? words(from)} → ${USER_ROLE[String(to)] ?? words(to)}`;
+    if (k === "permissionOverrides") return "permissions changed";
+    if (k === "name" || k === "email") return `${k} ${from == null ? "none" : String(from)} → ${to == null ? "none" : String(to)}`;
+    return `${label(k)}: ${fmt(k, from)} → ${fmt(k, to)}`;
+  });
+}
+
 /** Compact "key: value" listing of a (redacted) request body or params, cut to fit on a line. */
 function kv(x: unknown, max = 240): string {
   if (x === null || x === undefined) return "";
@@ -303,8 +320,9 @@ function describe(e: Event): string {
       return `Manager PIN refused: ${why} (asked for: ${perms(d.permissions)}${d.discountBps ? `, ${pct(d.discountBps)} discount` : ""})`;
     }
     case "LOGIN":
-      return `Signed in (${METHOD[d.method] ?? d.method})`;
+      return d.method === "web" ? "Signed in to the website" : `Signed in at the register${d.method && d.method !== "pin" ? ` (${METHOD[d.method] ?? d.method})` : ""}`;
     case "LOGIN_FAILED": {
+      if (d.reason === "EMPLOYEE_ACCOUNT") return `Tried to sign in to the website with an employee account${d.email ? ` (${d.email})` : ""}`;
       const method = METHOD[d.method] ?? d.method;
       return `Failed ${method ? `${method} ` : ""}sign-in${d.email ? ` as ${d.email}` : ""}${d.reason ? ` — ${d.reason === "LOCKED_OUT" ? "locked out after too many tries" : d.reason}` : ""}`;
     }
@@ -373,6 +391,13 @@ function describe(e: Event): string {
       const parts = [...changes(d.changes), ...(d.pinChanged ? ["new PIN"] : []), ...(d.passwordChanged ? ["new website password"] : [])];
       if (!parts.length && Array.isArray(d.fields)) parts.push(...d.fields.map((f: unknown) => label(String(f))));
       return `Changed ${d.targetName ?? "an employee"}: ${parts.join(", ") || "nothing"}`;
+    }
+    // Website users
+    case "USER_CREATED":
+      return `Added website user ${d.targetName ?? "a user"}${d.role ? ` (${USER_ROLE[d.role] ?? words(d.role)})` : ""}`;
+    case "USER_UPDATED": {
+      const parts = userChanges(d.changes);
+      return `Changed website user ${d.targetName ?? "a user"}: ${parts.join(", ") || (d.passwordChanged ? "" : "nothing")}${d.passwordChanged ? `${parts.length ? " · " : ""}password reset` : ""}`;
     }
     case "ROLE_UPDATED":
       return `Changed the ${words(d.role)} role: ${diff(d.before, d.after).join(", ") || "permissions updated"}`;
@@ -508,6 +533,7 @@ export function ActivityScreen() {
               </View>
               <Text style={ui.muted}>
                 {e.staffName ?? "Unknown"}
+                {e.staffKind === "USER" && <Text style={{ color: colors.muted, fontSize: 12 }}> · website</Text>}
                 {e.approverName ? ` · approved by ${e.approverName}` : ""}
                 {e.ip ? ` · ${e.ip}` : ""}
               </Text>

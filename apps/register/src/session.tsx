@@ -6,6 +6,8 @@ export interface Staff {
   id: string;
   name: string;
   role: "OWNER" | "MANAGER" | "CASHIER";
+  /** EMPLOYEE signs in at the register with a PIN; USER is a back-office website user. */
+  kind?: "EMPLOYEE" | "USER";
 }
 
 export interface Session {

@@ -1,4 +1,4 @@
-import type { MarketTrend } from "@mypos/shared";
+import type { MarketTrend, Permission, PermissionLevel } from "@mypos/shared";
 import * as SecureStore from "./storage";
 
 export class ApiError extends Error {
@@ -598,4 +598,19 @@ export interface TaskInput {
   assigneeId?: string | null;
   requireNote?: boolean;
   active?: boolean;
+}
+
+/** A back-office website user as GET /users returns it (register employees are GET /staff). */
+export interface WebUser {
+  id: string;
+  name: string;
+  email: string;
+  role: "OWNER" | "MANAGER";
+  active: boolean;
+  /** Only website permissions, and only ALLOW or DENY (there's no PIN pad on the website). */
+  permissionOverrides: Partial<Record<Permission, "ALLOW" | "DENY">>;
+  /** What they can do on the website: role defaults plus their overrides, for every website permission. */
+  permissions: Partial<Record<Permission, Exclude<PermissionLevel, "PIN">>>;
+  lastLoginAt: string | null;
+  createdAt: string;
 }

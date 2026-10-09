@@ -107,6 +107,7 @@ export function LoginScreen({ onSignedIn }: { onSignedIn: (staff: Staff, permiss
             )}
             {/* Keyed so switching modes clears the digits typed so far. */}
             <PinPad key={mode} onSubmit={mode === "clock" ? clock : signIn} busy={busy} submitLabel={mode === "clock" ? "Clock" : "Sign in"} />
+            {mode === "signin" && <Text style={[ui.muted, { textAlign: "center" }]}>Website users can't sign in here; use your employee PIN.</Text>}
             {error && <Text style={[ui.error, { textAlign: "center" }]}>{error}</Text>}
             <Button title={mode === "clock" ? "Back to sign in" : "Clock in / out"} kind="secondary" onPress={switchMode} disabled={busy} style={{ alignSelf: "stretch" }} />
             <View style={[ui.row, { gap: 16 }]}>

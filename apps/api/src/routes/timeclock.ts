@@ -3,7 +3,7 @@ import { z } from "zod";
 import { AppError, badRequest } from "../errors.js";
 import { parse, requireEmployee, requirePermission, requireStaff } from "../http.js";
 import type { Ctx } from "../services/context.js";
-import { audit, checkAttempts, clearFailures, employeeByPin, recordFailure } from "../services/permissions.js";
+import { audit, checkAttempts, clearFailures, employeeByPin, permissionDenied, recordFailure } from "../services/permissions.js";
 import { toCsv } from "../services/reports.js";
 import * as T from "../services/timeclock.js";
 
@@ -15,6 +15,13 @@ export function timeClockRoutes(app: FastifyInstance, base: Ctx) {
   const employee = { preHandler: requireEmployee() };
   const manage = { preHandler: requirePermission("MANAGE_TIMESHEETS") };
   const reports = { preHandler: requirePermission("VIEW_REPORTS") };
+  /** Hours aren't sales figures: whoever edits timesheets can read them too. */
+  const hours = {
+    preHandler: async (req: FastifyRequest, reply: FastifyReply) => {
+      await requireStaff()(req, reply);
+      if (req.perms?.levels.MANAGE_TIMESHEETS !== "ALLOW" && req.perms?.levels.VIEW_REPORTS !== "ALLOW") throw permissionDenied("VIEW_REPORTS");
+    },
+  };
   const ip = (req: FastifyRequest) => req.ip;
   const Id = z.object({ id: z.string().min(1) });
   const Note = z.string().trim().max(500);
@@ -166,7 +173,7 @@ export function timeClockRoutes(app: FastifyInstance, base: Ctx) {
   };
 
   /** Hours per employee; each entry too when `staffId` or `detail=true`. CSV is the entry rows in that case, else the per-employee rows. */
-  app.get("/reports/timesheets", reports, async (req, reply) => {
+  app.get("/reports/timesheets", hours, async (req, reply) => {
     const q = parse(RangeQuery.extend({ detail: Flag.optional() }), req.query);
     const r = await range(q);
     const detail = !!q.staffId || !!q.detail;
